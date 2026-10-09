@@ -1,0 +1,32 @@
+# Temp / analysis scratch (can be huge)
+work/
+
+# Generated highlights, thumbs, descriptions (large media — keep local)
+out/
+
+# Source / local recordings (if ever copied into the repo)
+*.mp4
+*.mkv
+*.mov
+*.avi
+*.webm
+*.wav
+*.aac
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+.env.*
+
+# OS / editor
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*~

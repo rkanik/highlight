@@ -1,0 +1,189 @@
+# PUBG Shorts / Reels edit preferences
+# Apply these rules to every future highlight cut unless the user overrides them.
+
+format:
+  aspect_ratio: "9:16"
+  resolution: "1080x1920"
+  fps: 60
+  container: mp4
+  # ALWAYS prefer GPU — CPU analysis previously overheated this PC
+  decode: cuda
+  video_encoder: h264_nvenc
+  video_preset: p5
+  cq: 18
+  video_bitrate_mbps: 12
+  maxrate_mbps: 16
+  audio_bitrate_kbps: 192
+  ffmpeg_threads: 2
+  filter_threads: 1
+  crop:
+    # 1920x1080 center crop to portrait; trim replay UI + top stats
+    portrait_width: 608
+    portrait_height: 1000
+    x_offset: 656
+    y_offset: 40
+  scale_to: "1080x1920"
+
+length:
+  target_min_seconds: 45
+  target_max_seconds: 90
+  allow_over_60_to_keep_all_kills: true
+
+include:
+  - all_kills
+  - knock_to_finish_sequences
+  - grenade_throws
+  - molotov_throws
+  - stun_flash_throws
+  - smoke_utility_when_in_fight_or_final_circle
+  - blue_zone_pressure_moments
+  - final_circle_climax
+  - chicken_dinner_or_winner_screen_if_present
+
+exclude:
+  - long_looting
+  - quiet_rotations_with_no_action
+  - AFK_or_menu_time
+  - duplicate_overlapping_clips
+  # CRITICAL: when the full PUBG replay control panel is open (EDIT / REPORT /
+  # Play-Pause / speed), SKIP those frames entirely. Do NOT crop the bar —
+  # remove the time ranges from the edit.
+  - replay_control_panel_open_frames
+
+replay_controls:
+  skip_when_open: true
+  crop_bar_instead_of_skip: false  # never; always skip frames
+  detect: full_panel_only  # EDIT/REPORT/play UI — not the thin yellow timeline alone
+  detection_region:
+    # 1920x1080 source
+    x: 500
+    y: 1005
+    w: 1200
+    h: 70
+  light_gray_ratio_threshold: 0.34
+  sample_fps: 2
+  pad_seconds: 0.3
+  merge_gap_seconds: 1.0
+
+padding:
+  before_kill_seconds: 4
+  after_kill_seconds: 3
+  before_utility_seconds: 2
+  after_utility_seconds: 3
+  before_zone_pressure_seconds: 2
+  after_zone_pressure_seconds: 2
+  final_circle_lead_in_seconds: 5
+  winner_screen_hold_seconds: 4
+
+clip_merging:
+  merge_gap_seconds: 3
+  min_clip_seconds: 5
+  max_single_clip_seconds: 30
+
+priority_order:
+  1: chicken_dinner_winner_screen
+  2: kills_and_multi_kills
+  3: utility_kills_or_utility_into_fight
+  4: final_circle_blue_zone
+  5: strong_gunfights_without_confirmed_kill
+
+detection:
+  # Keep detection LIGHT — no dense CPU frame OCR on this machine
+  use_audio_peaks: true
+  use_kill_feed_change_detection: true
+  reuse_cached_detection_json: true
+  sample_kill_feed_fps: 1
+  audio_peak_threshold_dbfs: -26
+  # Never run heavy PIL frame scans / full-video CPU decode again without GPU path
+  forbid_heavy_cpu_analysis: true
+
+style:
+  pacing: keep_action_readable_not_hypercut
+  transitions: hard_cuts_only
+  text_overlays: false
+  music: false
+  keep_game_audio: true
+
+output_metadata:
+  # ALWAYS generate a title and use it as the output filename + description file
+  always_generate_title: true
+  use_title_as_filename: true
+  write_description_txt: true
+  always_generate_thumbnail: true
+  # Keep ALL deliverables in one folder named after the title
+  package_in_title_folder: true
+  output_dir: out
+  title_folder_pattern: "out/{title}/"
+  description_filename_pattern: "{title}.txt"
+  video_filename_pattern: "{title}.mp4"
+  thumbnail_filename_pattern: "{title}.jpg"
+  meta_filename_pattern: "{title}.meta.json"
+  filename_sanitize:
+    replace_invalid_chars_with: " "
+    collapse_whitespace: true
+    max_length: 120
+  title_style:
+    format: "hook | PUBG"   # short, punchy, Shorts/Reels friendly
+    include_game: true
+    include_moment_type: true  # clutch / final circle / multi kill / chicken dinner
+    avoid_clickbait_lies: true  # don't claim CD if winner screen missing
+  thumbnail:
+    size: "1080x1920"          # match Shorts aspect
+    also_youtube_1280x720: true
+    pick_peak_action_frame: true
+    style: eye_catchy
+    effects:
+      - contrast_boost
+      - saturation_boost
+      - vignette
+      - bold_title_text
+      - thick_stroke_outline
+    text:
+      primary_from_title_hook: true
+      secondary: "PUBG"
+      colors: ["#FFEE00", "#FFFFFF"]
+      outline: "#000000"
+  description:
+    platforms: [youtube_shorts, facebook_reels]
+    include:
+      - title_line
+      - 1_to_3_sentence_summary
+      - moment_bullets
+      - keyword_block
+      - hashtag_block
+    hashtag_count_min: 8
+    hashtag_count_max: 18
+    always_include_tags:
+      - "#PUBG"
+      - "#PUBGMobile"   # optional reach; keep even for PC if shorts audience overlaps
+      - "#PUBGHighlights"
+      - "#Gaming"
+      - "#FPS"
+      - "#Shorts"
+      - "#Reels"
+      - "#ChickenDinner"  # only if winner confirmed; else omit
+    keyword_examples:
+      - PUBG highlights
+      - final circle
+      - clutch
+      - smoke play
+      - blue zone
+      - squad wipe
+      - battlegrounds
+
+safety:
+  prefer_gpu_encode: true
+  prefer_gpu_decode: true
+  max_cpu_threads: 2
+  note: "Prior CPU-heavy analysis caused 99% CPU / 90C+ / auto restart. Use NVENC + CUDA."
+
+notes:
+  - Always keep ALL kills even if the short goes over 60 seconds.
+  - Keep extra seconds before and after each kill.
+  - Keep utility throws (grenade, molotov, stun/flash) and blue-zone pressure.
+  - If recording ends before winner screen, keep final clash; note missing CD.
+  - Next recording tip: continue 5-10s after last kill for Chicken Dinner screen.
+  - Always skip frames where the full replay control panel is open — do not crop the bar.
+  - Thin yellow replay timeline alone is OK; full EDIT/REPORT panel must be removed.
+  - Always generate a title; save video as "{title}.mp4" and description as "{title}.txt" with keywords + hashtags.
+  - Always generate an eye-catchy thumbnail ({title}.jpg) and package all files in out/{title}/.
