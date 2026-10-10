@@ -40,18 +40,39 @@ VICTIM_ME = re.compile(
 )
 
 # OCR-tolerant "YOU KNOCKED / YOU KILLED"
+# Includes truncations: "YOU KN [clan]", "YOU KNd EDOUT", "YOO k"
 YOU_KNOCK = re.compile(
     r"\byou\s*kn[o0]ck|\byou\s*d[o0]wn|\by[o0]u\s*kn[o0]ck|"
-    r"\byou\s*kn[o0]c|\byou\s*knocke[od]?",
+    r"\byou\s*kn[o0]c|\byou\s*knocke[od]?|"
+    r"\byou\s*kn[\s\[_]|\byou\s*kn\b|\byoo\s*k\b",
     re.I,
 )
 YOU_KILL = re.compile(
     r"\byou\s*kill|\byou\s*elimin|\by[o0]u\s*kill|"
-    r"\byou\s*kille[ed]?|\byou\s*killl?",
+    r"\byou\s*kille[ed]?|\byou\s*killl?|"
+    r"\byou\s*ki[l1]{1,3}|\bu\s*kil[l1]|"
+    r"\byou\s*with\s+\w|"  # "YOU with M24"
+    r"\byou\s*(aug|akm|m416|m24|awm|kar98k?|vector|mp5k?|ace32|frag)\b",
     re.I,
 )
-# "2 KILLS" / "3 KILLS" personal counter flash near fight tip
+# "2 KILLS" personal counter under YOU KILLED tip (banner crop)
 MY_KILLS_COUNTER = re.compile(r"\b([1-9]|1[0-9])\s*kills?\b", re.I)
+# Common weapon names as OCR anchors when YOU/KILLED is garbled
+WEAPON_RE = re.compile(
+    r"\b(aug|akm|m416|m16|scar|vector|ump|ump45|beryl|groza|kar98k?|awm|m24|"
+    r"mini(?:14)?|sks|slr|vss|dp[- ]?28|mg3|p90|mp5k?|ace32|mk12|mk14|"
+    r"tommy|uzi|s1897|s686|dbs|frag(?:\s*grenade)?|pan)\b",
+    re.I,
+)
+HEADSHOT_WITH = re.compile(
+    r"(head\s*shot|h[eo]adshot|dshot|h\$d\$h[o0]t).{0,12}with|"
+    r"by\s*headshot\s*with|headshot\s*with",
+    re.I,
+)
+WITH_WEAPON = re.compile(
+    rf"with\s*{WEAPON_RE.pattern}|\bYOU\s*{WEAPON_RE.pattern}",
+    re.I,
+)
 
 
 def run(cmd, check=True):
@@ -160,11 +181,27 @@ def classify(text: str) -> str | None:
         return None
     if VICTIM_ME.search(text):
         return None
+    # painkiller / drinks are not kills
+    if re.search(r"pain\s*kill|used\s+energy|used\s+pain", text, re.I):
+        return None
     t = text.lower()
-    # teammate knock lines without YOU — skip unless YOU present
+    # Teammate tip/feed (Ashfaqul / sazalDas / BAYZID) — not my knock/kill
+    # Note: names often OCR as bayzid_bd / sazalDas — avoid \b after stem
+    teammate = re.search(
+        r"(ashfaqul|faqul\s*asif|qul\s*asif|sazal\s*das|sazaldas|saz\s*as|"
+        r"zal\s*das|bayzid|gazaldas)",
+        t,
+    )
+    if teammate and PLAYER not in t:
+        # allow only clear YOU-actor tips
+        if not re.search(r"\byou\s*(kn|kill|with|fina)", t):
+            return None
     if YOU_KNOCK.search(text):
         return "my_knock"
     if YOU_KILL.search(text):
+        return "my_kill"
+    # Personal "2 KILLS" counter under the tip (seen at 07:01 miss)
+    if MY_KILLS_COUNTER.search(text) and not re.search(r"\balive\b", t):
         return "my_kill"
     # Scrambled OCR: YOU must appear before kill/knock (avoids "X KNOCKED YOU")
     if re.search(r"\byou\b.{0,40}kill", t) and not re.search(r"painkill", t):
@@ -174,16 +211,89 @@ def classify(text: str) -> str | None:
     # Heavy OCR damage on YOU KNOCKED OUT (seen in production):
     # "U NOC ? OUT", "Y KNOC QUT", "UK CKEDOUT", "KN CKED OUT", "CKEDOUT"
     if re.search(
-        r"(u\s*noc|y\s*knoc|you?\s*kn[o0c]{1,4}|uk?\s*c?ked\s*out|kn\s*c?ked\s*out|cked\s*out|knock\s*o\s*t\s*you)",
+        r"(u\s*noc|y\s*knoc|you?\s*kn[o0c]{1,4}|uk?\s*c?ked\s*out|kn\s*c?ked\s*out|"
+        r"cked\s*out|knock\s*o\s*t\s*you|knd?\s*ed\s*out|kn\s*ed\s*out)",
         t,
     ):
         return "my_knock"
+    # Garbled KILLED: "KILLE with M416", "U KIL [LOVE]", "LIED … AUG"
+    if re.search(r"\bkill[e3]?[d\"]?\b|\bkille\b|\bu\s*kil\b|\bkil[l1]e\b", t) and (
+        WEAPON_RE.search(text) or re.search(r"zeroing|head\s*shot|\[", t)
+    ):
+        return "my_kill"
+    # Tip fragment: headshot/dshot with weapon — require YOU or very short tip
+    if HEADSHOT_WITH.search(text) and WEAPON_RE.search(text):
+        if re.search(r"\byou\b", t):
+            return "my_knock" if re.search(r"knock|kn\s|out", t) else "my_kill"
+        # "dshot with Vector" ok; bare "by headshot with ACE32" from teammate feed — skip
+        if len(text) <= 28 and not re.match(r"^\s*by\s+head", t):
+            return "my_knock" if re.search(r"knock|kn\s|out", t) else "my_kill"
+    # Tip fragment: "023PWD with AUG" / "with Vector" / "… Zeroing … AUG"
+    if WEAPON_RE.search(text) and re.search(r"zeroing", t) and re.search(
+        r"\byou\b|pwd|kill|kn\b|\[.{0,8}\]", t
+    ):
+        if teammate and not re.search(r"\byou\b", t):
+            return None
+        return "my_kill"
+    if WITH_WEAPON.search(text) and (
+        re.search(r"\byou\b|zeroing|pwd|^\s*\W?\w{3,14}\s+with", t)
+        or (len(text) <= 28 and not re.match(r"^\s*by\s+head", t))
+    ):
+        # skip enemy knocked my teammate / teammate actor lines
+        if re.search(r"knocked\s*\[?\s*asa\]|\[asa\].{0,20}out\s+with", t):
+            return None
+        if teammate and not re.search(r"\byou\b", t):
+            return None
+        if re.match(r"^\s*by\s+head", t) and not re.search(r"\byou\b", t):
+            return None
+        return "my_kill"
     # Kill feed line: "rkanik ... X ... [ENEMY]" (X = knock icon in OCR)
     if re.search(rf"{re.escape(PLAYER)}.{{0,50}}\bx\b.{{0,40}}\[", t):
         return "my_knock"
     if re.search(rf"{re.escape(PLAYER)}.{{0,60}}killed", t) and not VICTIM_ME.search(text):
         return "my_kill"
+    if re.search(rf"\[asa\]\s*{re.escape(PLAYER)}", t) and WEAPON_RE.search(text):
+        return "my_kill"
     return None
+
+
+def ocr_enhanced(path: Path, tmp_dir: Path) -> str:
+    """Contrast-boost + 2x upscale OCR retry for blank/garbled tip frames."""
+    from PIL import ImageEnhance, ImageOps, ImageFilter
+
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    outp = tmp_dir / f"enh_{path.stem}.jpg"
+    im = Image.open(path).convert("L")
+    im = ImageOps.autocontrast(im, cutoff=1)
+    im = ImageEnhance.Contrast(im).enhance(1.8)
+    im = im.filter(ImageFilter.SHARPEN)
+    im = im.resize((im.size[0] * 2, im.size[1] * 2), Image.Resampling.LANCZOS)
+    im.save(outp, quality=95)
+    return ocr_one(outp)
+
+
+def promote_neighbor_partials(ocr_map: dict[int, str]) -> dict[int, str]:
+    """
+    If a tip fragment like 'with AUG' sits next to a YOU/KILL/N KILLS hit,
+    copy enough context so classify() can fire on the fragment timestamp.
+    """
+    out = dict(ocr_map)
+    anchors = {t for t, tx in ocr_map.items() if classify(tx or "")}
+    for t, tx in list(ocr_map.items()):
+        if not tx or classify(tx):
+            continue
+        if not (WITH_WEAPON.search(tx) or HEADSHOT_WITH.search(tx) or MY_KILLS_COUNTER.search(tx)):
+            continue
+        if any(abs(t - a) <= 3 for a in anchors):
+            # stitch nearest anchor text for classification only
+            near = min(anchors, key=lambda a: abs(a - t))
+            out[t] = f"{ocr_map.get(near, '')} {tx}"
+        elif WITH_WEAPON.search(tx) and len(tx) <= 40:
+            # standalone short weapon tip — do not invent YOU for bare "by headshot..."
+            if re.match(r"^\s*by\s+head", tx, re.I):
+                continue
+            out[t] = f"YOU KILLED {tx}"
+    return out
 
 
 def analyze_video(video: Path, idx: int) -> dict:
@@ -241,12 +351,43 @@ def analyze_video(video: Path, idx: int) -> dict:
     sparse_path = vwork / "banner_ocr_sparse.json"
     sparse_path.write_text(json.dumps({str(k): v for k, v in sorted(ocr_map.items())}, indent=2), encoding="utf-8")
 
+    # Retry blank OCR on top white-flash candidates only (sparse, thermal-safe)
+    enh_dir = vwork / "banner_enh"
+    blank_cand = [
+        t for _, t in scored
+        if not (ocr_map.get(t) or "").strip()
+    ][:20]
+    for t in blank_cand:
+        fp = banner_dir / f"f_{t + 1:06d}.jpg"
+        if not fp.exists():
+            continue
+        text = ocr_enhanced(fp, enh_dir)
+        if text:
+            ocr_map[t] = text
+            rescan[t] = text
+            time.sleep(OCR_PAUSE_S)
+
+    if rescan:
+        rescan_path.write_text(
+            json.dumps({str(k): v for k, v in rescan.items()}, indent=2), encoding="utf-8"
+        )
+    sparse_path = vwork / "banner_ocr_sparse.json"
+    sparse_path.write_text(
+        json.dumps({str(k): v for k, v in sorted(ocr_map.items())}, indent=2), encoding="utf-8"
+    )
+
+    ocr_for_class = promote_neighbor_partials(ocr_map)
     events = []
-    for t, text in sorted(ocr_map.items()):
+    for t, text in sorted(ocr_for_class.items()):
         kind = classify(text)
         if not kind:
             continue
-        events.append({"t": float(t), "kind": kind, "text": text, "source": "banner"})
+        events.append({
+            "t": float(t),
+            "kind": kind,
+            "text": ocr_map.get(t, text),
+            "source": "banner",
+        })
         safe = (text or "")[:90].encode("ascii", errors="replace").decode("ascii")
         print(f"  HIT t={t} {kind}: {safe}", flush=True)
 

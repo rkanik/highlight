@@ -29,7 +29,7 @@ import ks1_detect_gpu as ks1  # noqa: E402
 
 ASSIST_RE = re.compile(
     r"\bi\s*assist|\bassists?\b|\bassisted\b|\+\s*\d+\s*assist|assist\s*\+|you\s*assist|"
-    r"\d+\s*assists?\b",
+    r"\d+\s*assists?\b|u?ssists?|ass+ist",
     re.I,
 )
 # map-only counter noise without fight context
@@ -117,12 +117,18 @@ def analyze(video: Path, idx: int) -> dict:
         encoding="utf-8",
     )
 
+    ocr_for_class = ks1.promote_neighbor_partials(ocr_map)
     events = []
-    for t, text in sorted(ocr_map.items()):
+    for t, text in sorted(ocr_for_class.items()):
         kind = classify_any(text)
         if not kind:
             continue
-        events.append({"t": float(t), "kind": kind, "text": text, "source": "banner"})
+        events.append({
+            "t": float(t),
+            "kind": kind,
+            "text": ocr_map.get(t, text),
+            "source": "banner",
+        })
         safe = (text or "")[:90].encode("ascii", "replace").decode("ascii")
         print(f"  HIT t={t} {kind}: {safe}", flush=True)
 
