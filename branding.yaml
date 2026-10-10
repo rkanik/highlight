@@ -1,0 +1,18 @@
+# AUGNIIK channel branding for highlight thumbnails
+character_avatar: augniik-character.png   # PUBG lobby character — clear pose; replace when better face shot available
+logo: augniik-profile.jpg                 # circular brand mark — use EXACTLY ONE per thumbnail
+cover: augniik-cover.jpg
+
+thumbnail:
+  character_as_ai_hero_ref: true          # use lobby shot as GenerateImage ref, not a second circle
+  no_lobby_circle_over_ai_hero: true      # prevents double avatar
+  logo_count: 1
+  logo_placement: bottom_left
+  no_extra_wordmark: true
+  prefer_ai_base: true
+  shorts_aspect: "9:16"
+  yt_aspect: "16:9"
+  resize_mode: cover_crop                 # never stretch
+  ai_refs:
+    - augniik-character.png
+    - augniik-cover.jpg

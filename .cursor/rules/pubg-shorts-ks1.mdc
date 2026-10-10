@@ -1,0 +1,38 @@
+---
+description: KS1 template — kill-shot only PUBG shorts (knocks + kills)
+alwaysApply: true
+---
+
+# PUBG Shorts — Template KS1 (Kill Shots)
+
+Use when the user asks for **KS1**, "kill shots", or knock/kill-only cuts.
+
+Follow **global GPU/thermal hard rules** — never batch-OCR whole matches; detect banner flashes on GPU crops, OCR only sparse candidates.
+
+## Include
+- Moments where **I knocked** an enemy
+- Moments where **I killed / finished** an enemy
+- Keep knock→finish as one sequence when close together
+
+## Exclude (KS1-specific)
+- Chicken Dinner / winner screen (even if present)
+- Final-circle atmosphere without a knock/kill
+- Utility throws, looting, rotations, zone pressure **unless** they sit inside the kill-shot padding window
+- Spectator / death-cam / watching teammates
+- Other players' kills in the feed that are not mine
+
+## Detection priority
+1. Center tip: `YOU KNOCKED OUT` / `YOU KILLED` (tolerate OCR garble)
+2. Kill feed / match log: `[ASA] rkanik` on the **left** (killer) with knock (X/crawl) or kill icon — not when rkanik is the victim on the right
+3. Skip spectator POV (highlighted teammate that isn't me)
+4. Never rely only on clean OCR — feed lines like `rkanik [AUG] X enemy` count as my knock
+
+## Pacing
+- Padding: 4s before / 3s after each knock or kill (global defaults)
+- Hard cuts between separate fights
+- Target ~45–90s; keep every confirmed knock/kill even if longer
+- No CD end-card; end on the last kill-shot
+
+## Title / tags
+- Moment type: kill montage / multi kill / knock chain — **not** chicken dinner
+- Omit `#ChickenDinner` unless a different template confirms a win

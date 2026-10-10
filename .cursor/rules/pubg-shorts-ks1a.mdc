@@ -1,0 +1,23 @@
+---
+description: KS1A template — kill shots plus my assist kills
+alwaysApply: true
+---
+
+# PUBG Shorts — Template KS1A (Kills + Assists)
+
+Use when the user asks for **KS1A**, "with assists", or kill shots **plus assist kills**.
+
+Follow global GPU/thermal hard rules.
+
+## Include (on top of KS1)
+- Moments where **I knocked** an enemy
+- Moments where **I killed / finished** an enemy
+- Moments where I got an **ASSIST** (damage that helps a teammate finish)
+
+## Exclude
+- Same as KS1 (no Chicken Dinner, no spectator, no other players' unrelated feed)
+- Bare map "ASSISTED" counter alone without a fight banner
+
+## Title / tags
+- Moment type: kill + assist montage
+- Hashtags can add `#Assist` / `#TeamPlay`; still omit `#ChickenDinner` unless win confirmed

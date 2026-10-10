@@ -1,5 +1,78 @@
 # PUBG Shorts / Reels edit preferences
 # Apply these rules to every future highlight cut unless the user overrides them.
+#
+# Rules (Cursor):
+#   .cursor/rules/pubg-shorts-global.mdc  — always-on global config
+#   .cursor/rules/pubg-shorts-ks1.mdc     — template KS1 (kill shots)
+#
+# Templates override include/exclude/priority for a given run.
+# Active template for a job is set via `active_template` or the user's request.
+
+source_dir: "V:/PUBG"
+active_template: KS1  # current run; set null or another template name as needed
+
+templates:
+  KS1:
+    name: Kill Shots
+    description: Only moments where I knocked or killed an enemy
+    include:
+      - my_knocks
+      - my_kills
+      - knock_to_finish_sequences
+    exclude:
+      - chicken_dinner_or_winner_screen
+      - spectator_or_deathcam
+      - other_players_feed_kills
+      - utility_outside_kill_padding
+      - final_circle_without_knock_or_kill
+      - long_looting
+      - quiet_rotations_with_no_action
+      - AFK_or_menu_time
+      - duplicate_overlapping_clips
+      - replay_control_panel_open_frames
+    priority_order:
+      1: my_kills_and_multi_kills
+      2: my_knocks
+      3: knock_to_finish_sequences
+    title_moment_types:
+      - kill montage
+      - multi kill
+      - knock chain
+    omit_hashtags:
+      - "#ChickenDinner"
+  KS1A:
+    name: Kill Shots + Assists
+    description: KS1 plus my assist kills (damage helping teammate finishes)
+    include:
+      - my_knocks
+      - my_kills
+      - my_assists
+      - knock_to_finish_sequences
+    exclude:
+      - chicken_dinner_or_winner_screen
+      - spectator_or_deathcam
+      - other_players_feed_kills
+      - utility_outside_kill_padding
+      - final_circle_without_knock_or_kill
+      - long_looting
+      - quiet_rotations_with_no_action
+      - AFK_or_menu_time
+      - duplicate_overlapping_clips
+      - replay_control_panel_open_frames
+    priority_order:
+      1: my_kills_and_multi_kills
+      2: my_knocks
+      3: my_assists
+      4: knock_to_finish_sequences
+    title_moment_types:
+      - kill montage
+      - assist montage
+      - team fight
+    omit_hashtags:
+      - "#ChickenDinner"
+    extra_hashtags:
+      - "#Assist"
+      - "#TeamPlay"
 
 format:
   aspect_ratio: "9:16"
@@ -14,7 +87,7 @@ format:
   video_bitrate_mbps: 12
   maxrate_mbps: 16
   audio_bitrate_kbps: 192
-  ffmpeg_threads: 2
+  ffmpeg_threads: 1
   filter_threads: 1
   crop:
     # 1920x1080 center crop to portrait; trim replay UI + top stats
@@ -131,17 +204,32 @@ output_metadata:
     size: "1080x1920"          # match Shorts aspect
     also_youtube_1280x720: true
     pick_peak_action_frame: true
-    style: eye_catchy
+    style: eye_catchy_branded
+    # AI hero uses character ref; composite ONE logo only — scripts/make_augniik_thumb.py
+    avatar_path: "augniik-character.png"   # GenerateImage reference (not a second circle badge)
+    logo_path: "augniik-profile.jpg"       # exactly one logo (already has AUGNIIK text)
+    logo_count: 1
+    no_lobby_circle_over_ai_hero: true     # avoids double avatar
+    no_second_brand_chip: true
+    no_extra_wordmark: true
+    shorts_aspect: "9:16"
+    yt_aspect: "16:9"
+    resize_mode: cover_crop                # never stretch landscape AI into 9:16
+    brand_colors: ["#00D2FF", "#FF8C14", "#FFE600"]  # cyan / orange / yellow
     effects:
       - contrast_boost
       - saturation_boost
       - vignette
+      - diagonal_neon_slash
+      - brand_side_rails
       - bold_title_text
       - thick_stroke_outline
+      - avatar_white_ring
     text:
       primary_from_title_hook: true
-      secondary: "PUBG"
-      colors: ["#FFEE00", "#FFFFFF"]
+      secondary: "PUBG SHORTS"
+      brand_name: "AUGNIIK"
+      colors: ["#FFEE00", "#FFFFFF", "#00D2FF"]
       outline: "#000000"
   description:
     platforms: [youtube_shorts, facebook_reels]
@@ -172,10 +260,20 @@ output_metadata:
       - battlegrounds
 
 safety:
+  # HARD — PC restarted at 99% CPU / ~85–90C. Never relax without user override.
+  require_gpu_decode: true
+  require_gpu_encode: true
   prefer_gpu_encode: true
   prefer_gpu_decode: true
-  max_cpu_threads: 2
-  note: "Prior CPU-heavy analysis caused 99% CPU / 90C+ / auto restart. Use NVENC + CUDA."
+  max_cpu_threads: 1
+  ffmpeg_threads: 1
+  filter_threads: 1
+  one_ffmpeg_at_a_time: true
+  forbid_batch_windows_ocr: true
+  max_ocr_frames_per_video: 40
+  forbid_heavy_cpu_analysis: true
+  forbid_parallel_detect_and_encode: true
+  note: "99% CPU / 85C+ caused auto restart. CUDA decode + NVENC encode only for heavy work. OCR only sparse prefiltered candidates."
 
 notes:
   - Always keep ALL kills even if the short goes over 60 seconds.

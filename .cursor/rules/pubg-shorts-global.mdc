@@ -1,0 +1,50 @@
+---
+description: Global PUBG Shorts config — GPU-only heavy work, thermal safety
+alwaysApply: true
+---
+
+# PUBG Shorts — Global Config
+
+Source prefs: `edit_preferences.yaml`. Apply unless the user overrides for that run.
+
+## HARD RULE — GPU / thermal (never violate)
+This PC previously hit **99% CPU / ~85–90°C and auto-restarted**. Treat CPU as scarce.
+
+- **All high-intensity video work MUST use GPU**: decode `cuda`, encode `h264_nvenc` (or hevc_nvenc). No CPU libx264/libx265 for finals.
+- **ffmpeg**: `-hwaccel cuda`, `-threads 1`, `filter_threads=1`. One ffmpeg job at a time.
+- **Forbidden without explicit user override**:
+  - Full-video dense CPU frame OCR / PIL scans
+  - Batch Windows OCR on hundreds of frames
+  - Parallel detect+encode+OCR pipelines
+  - `numpy`/`cv2` full-frame analysis loops
+- **Allowed light CPU only**: tiny already-cropped strips, audio peak parse, final metadata/txt, thumbnail text draw.
+- If a step needs OCR: **prefilter on GPU-extracted crops first**, OCR **≤40 candidates/video**, serial, with pause. Prefer skipping OCR over cooking the CPU.
+- Watch for heat: prefer shorter GPU extract passes over long CPU analysis.
+
+## Source & POV
+- Source folder default: `V:/PUBG`
+- **Player POV only** — skip spectator / death-cam / teammate-watch
+- Skip full **replay control panel** open ranges (never crop the bar). Thin yellow timeline alone is OK.
+
+## Encode
+- 9:16 · 1080x1920 · 60fps · mp4
+- NVENC p5 · CQ 18 · ~12 Mbps (max 16) · AAC 192k · game audio · hard cuts · no in-video text/music
+- Portrait crop (1920x1080): w=608 h=1000 x=656 y=40 → scale 1080x1920
+
+## Output package
+Always `out/{title}/` with `{title}.mp4`, `.txt`, `.jpg` (+ optional YT), `.meta.json`.
+Title: `hook | PUBG`. Don't claim Chicken Dinner unless winner screen present.
+
+## Thumbnail brand (always)
+- Prefer **AI-generated** base thumb (Cursor `GenerateImage`) with refs `augniik-character.png` + `augniik-cover.jpg`
+- **Aspect**: Shorts `aspect_ratio: "9:16"` · YT `aspect_ratio: "16:9"` — never force-stretch a landscape AI into 9:16 (use cover-crop only)
+- Prompt: character is the hero; **NO logos / NO brand marks / NO circular badges**
+- Composite **exactly one** logo: `augniik-profile.jpg` (already says AUGNIIK — no extra wordmark/chip)
+- **Never** paste a second lobby-character circle on top of AI hero art (that is "double avatar")
+- `augniik-character.png` is the AI **reference** for face/outfit/pose — not a second badge
+- Fallback: `scripts/make_augniik_thumb.py` (single logo only)
+- When user supplies a clearer face/pose shot, replace `augniik-character.png` and reuse for all thumbs
+
+## Clip defaults (templates may override include/exclude)
+- Keep ALL my kills/knocks even if over 60s
+- Padding ~4s before / ~3s after · merge gap 3s · min 5s · max 30s/clip unless fight needs more
