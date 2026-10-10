@@ -1,0 +1,71 @@
+---
+description: MH1 template — landscape match highlight (fights, kills, assists, utility)
+alwaysApply: true
+---
+
+# PUBG — Template MH1 (Match Highlight, Landscape)
+
+Use when the user asks for **MH1**, "match highlight", or a **landscape** full-match style reel.
+
+Follow **global GPU/thermal hard rules** — never batch-OCR whole matches; reuse KS1/KS1A caches; OCR only sparse new candidates.
+
+## Format
+- **Landscape** 16:9 · 1920x1080 · 60fps · mp4
+- NVENC p5 · CQ 18 · ~12 Mbps · AAC 192k · hard cuts · game audio
+- No portrait crop (keep full frame)
+- Target length: pack action up to **10 minutes** (600s). Prefer denser fights over quiet filler.
+
+## Include
+- My knocks / kills / finishes
+- My assists (damage helping teammate finishes)
+- Gunfight **engagements** (sustained fire / audio-peak fight clusters even without a confirmed frag)
+- Utility: frag / molotov / stun / flash / smoke when tied to a fight or clear throw tip
+- **Landing** clip when freefall/parachute exists early in a match (match separator)
+- Special moments from tip/OCR: Chicken Dinner / winner, airdrop, notable vehicle destroy — **only if present**
+- Keep knock→finish and fight chains as one sequence when close
+
+## Open + match structure (HARD)
+- **Cold open (~5s):** start reel with top **3–5** punchiest kills/knocks (micro cuts ~1s each). Rank by kill > knock, headshot/frag/sniper, multi-kill clusters; diversify across matches. Full fight pads still appear later in body.
+- **Landing separators:** when a landing is detected for a source VOD, insert that ~5s landing clip **before** that match’s fight clips so matches read as distinct. Skip if VOD starts mid-match / no freefall.
+- Order: `cold_open → (landing? + fights)* per match`
+
+## Exclude
+- Spectator / death-cam / teammate-watch POV
+- Full replay control panel open ranges (never crop the bar)
+- Long looting, quiet rotations, AFK / menu
+- Other players' unrelated feed with no me/team involvement
+- Bare map "ASSISTED" counter alone without a fight banner
+- Stretching quiet downtime just to fill 10 minutes
+
+## Detection priority
+1. Center tip: `YOU KNOCKED OUT` / `YOU KILLED` / assist tips (OCR-tolerant)
+2. Kill feed with me or squad on the **left** (killer / assist actor)
+3. Audio-peak + feed-change clusters → engagement windows
+4. Utility / special tips from cached sparse OCR
+5. Skip spectator POV
+
+## Pacing
+- Padding defaults: kill/knock/assist ~5s before / 4s after; utility ~2s / 3s; engagement ~4s / 4s
+- Merge gap ~5s (keep fight readable)
+- Min clip ~6s · max single clip ~45s unless one continuous fight needs more
+- Hard cuts between separate fights
+- If over 600s: keep priority order — kills → knocks → assists → utility-in-fight → engagements → special; drop lowest-value engagements first
+
+## Title (HARD)
+- **Never** use kill/frag/event **count as the title** (forbid `Match Highlight N Frags | PUBG`, `N FRAGS` folders).
+- **Always** write an AI title: short punchy hook from fight vibe (Kar98, frag finish, assist chain, squad fight) then `| PUBG`.
+- Examples: `Kar98 Frag Fight Spree | PUBG`, `Squad Fight Frag Storm | PUBG`
+- Output folder / `.mp4` / `.txt` / `.meta.json` / thumbs follow that AI title (`sanitize` only). Counts stay in description/meta only.
+
+## Thumbnail (HARD)
+- **Required path** — do **not** ship old gameplay still + giant count card.
+- **AI base**: Cursor `GenerateImage` with refs `augniik-character.png` + `augniik-cover.jpg` (character = hero; no logos/badges in the AI prompt).
+- **Aspect**: MH1 primary + YT = `16:9` (1920x1080 / 1280x720). Optional Shorts via cover-crop only — never stretch.
+- **Composite exactly one logo**: `augniik-profile.jpg` via `scripts/composite_ai_thumb.py`.
+- `augniik-character.png` = AI **reference** only — never a second circle badge on the hero (no double avatar).
+- Hook text on thumb = AI title hook words, **not** a kill count.
+
+## Tags
+- Moment type: match highlight / fight reel / squad highlight
+- Hashtags: `#PUBGHighlights` `#MatchHighlight`; add `#Assist` / `#TeamPlay` when assists present
+- Include `#ChickenDinner` **only** if winner screen confirmed

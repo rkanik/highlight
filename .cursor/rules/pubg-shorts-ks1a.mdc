@@ -18,6 +18,20 @@ Follow global GPU/thermal hard rules.
 - Same as KS1 (no Chicken Dinner, no spectator, no other players' unrelated feed)
 - Bare map "ASSISTED" counter alone without a fight banner
 
-## Title / tags
+## Title (HARD)
+- **Never** use event/kill/assist **count as the title** (forbid `N Kills Assists Today | PUBG`, `N PLAYS`, folder names driven by detect totals).
+- **Always** write an AI title: short punchy hook from the fight vibe (weapons, multi-kill, clutch, assist chain, map feel) then `| PUBG`.
+- Examples of shape: `Squad Wipe Assist Chain | PUBG`, `Kar98 Knock Then Finish | PUBG` — not a number dump.
+- Output folder / `.mp4` / `.txt` / `.meta.json` names follow that AI title (`sanitize` only). Counts stay inside description/meta only.
+
+## Thumbnail (HARD)
+- **Required path** for KS1A Shorts + YT thumbs — do **not** ship the old count card (`make_augniik_thumb.py` giant number + “KILLS + ASSISTS” on raw gameplay still).
+- **AI base**: Cursor `GenerateImage` with refs `augniik-character.png` + `augniik-cover.jpg` (character = hero; no logos/badges in the AI prompt).
+- **Aspect**: Shorts `9:16` · YT `16:9` — generate each; never stretch 16:9 into 9:16.
+- **Composite exactly one logo**: `augniik-profile.jpg` (AUGNIIK mark). No second lobby-avatar circle on top of AI hero (no double avatar).
+- `augniik-character.png` = face/outfit **reference** for the AI image only, not a second badge.
+- Fallback `scripts/make_augniik_thumb.py` only if `GenerateImage` fails — and still **no** giant kill-count as the hero text; prefer hook words from the AI title.
+
+## Tags
 - Moment type: kill + assist montage
 - Hashtags can add `#Assist` / `#TeamPlay`; still omit `#ChickenDinner` unless win confirmed

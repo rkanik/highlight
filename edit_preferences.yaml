@@ -4,12 +4,14 @@
 # Rules (Cursor):
 #   .cursor/rules/pubg-shorts-global.mdc  — always-on global config
 #   .cursor/rules/pubg-shorts-ks1.mdc     — template KS1 (kill shots)
+#   .cursor/rules/pubg-shorts-ks1a.mdc    — template KS1A (kills + assists)
+#   .cursor/rules/pubg-shorts-mh1.mdc     — template MH1 (landscape match highlight)
 #
 # Templates override include/exclude/priority for a given run.
 # Active template for a job is set via `active_template` or the user's request.
 
 source_dir: "V:/PUBG"
-active_template: KS1  # current run; set null or another template name as needed
+active_template: MH1  # current run; set null or another template name as needed
 
 templates:
   KS1:
@@ -73,6 +75,86 @@ templates:
     extra_hashtags:
       - "#Assist"
       - "#TeamPlay"
+  MH1:
+    name: Match Highlight (Landscape)
+    description: Landscape match highlight — fights, kills, assists, engagements, utility, special moments
+    aspect_ratio: "16:9"
+    resolution: "1920x1080"
+    max_seconds: 600
+    include:
+      - my_knocks
+      - my_kills
+      - my_assists
+      - knock_to_finish_sequences
+      - gunfight_engagements
+      - grenade_throws
+      - molotov_throws
+      - stun_flash_throws
+      - smoke_utility_when_in_fight
+      - airdrop_or_special_tip_if_present
+      - chicken_dinner_or_winner_screen_if_present
+      - landing_when_present
+      - cold_open_top_kills
+    cold_open:
+      enabled: true
+      target_seconds: 5
+      min_kills: 3
+      max_kills: 5
+    landing:
+      enabled: true
+      pad_before_seconds: 1
+      pad_after_seconds: 4
+      as_match_separator: true
+    exclude:
+      - spectator_or_deathcam
+      - other_players_unrelated_feed
+      - long_looting
+      - quiet_rotations_with_no_action
+      - AFK_or_menu_time
+      - duplicate_overlapping_clips
+      - replay_control_panel_open_frames
+      - pad_quiet_time_to_fill_10_min
+    priority_order:
+      1: my_kills_and_multi_kills
+      2: my_knocks
+      3: my_assists
+      4: utility_into_fight
+      5: gunfight_engagements
+      6: special_moments_winner_airdrop
+    title_moment_types:
+      - match highlight
+      - fight reel
+      - squad highlight
+    title_style:
+      never_use_count: true
+      always_ai_hook: true
+      format: "hook | PUBG"
+    omit_hashtags:
+      - "#ChickenDinner"  # only when winner confirmed at assemble time
+    extra_hashtags:
+      - "#MatchHighlight"
+      - "#PUBGHighlights"
+    thumbnail:
+      size: "1920x1080"
+      primary_aspect: "16:9"
+      ai_generate: true
+      ai_refs: ["augniik-character.png", "augniik-cover.jpg"]
+      logo_path: "augniik-profile.jpg"
+      logo_count: 1
+      no_lobby_circle_over_ai_hero: true
+      composite_script: "scripts/composite_ai_thumb.py"
+      also_shorts_portrait: false
+    padding:
+      before_kill_seconds: 5
+      after_kill_seconds: 4
+      before_utility_seconds: 2
+      after_utility_seconds: 3
+      before_engagement_seconds: 4
+      after_engagement_seconds: 4
+    clip_merging:
+      merge_gap_seconds: 5
+      min_clip_seconds: 6
+      max_single_clip_seconds: 45
 
 format:
   aspect_ratio: "9:16"

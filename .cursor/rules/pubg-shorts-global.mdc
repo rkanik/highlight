@@ -27,9 +27,10 @@ This PC previously hit **99% CPU / ~85–90°C and auto-restarted**. Treat CPU a
 - Skip full **replay control panel** open ranges (never crop the bar). Thin yellow timeline alone is OK.
 
 ## Encode
-- 9:16 · 1080x1920 · 60fps · mp4
+- Default Shorts: 9:16 · 1080x1920 · 60fps · mp4
+- Template **MH1** overrides to landscape 16:9 · 1920x1080 (see `pubg-shorts-mh1.mdc`)
 - NVENC p5 · CQ 18 · ~12 Mbps (max 16) · AAC 192k · game audio · hard cuts · no in-video text/music
-- Portrait crop (1920x1080): w=608 h=1000 x=656 y=40 → scale 1080x1920
+- Portrait crop (1920x1080): w=608 h=1000 x=656 y=40 → scale 1080x1920 (KS1/KS1A only)
 
 ## Output package
 Always `out/{title}/` with `{title}.mp4`, `.txt`, `.jpg` (+ optional YT), `.meta.json`.

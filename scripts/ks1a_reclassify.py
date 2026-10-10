@@ -115,17 +115,6 @@ def recover_video(video: Path, idx: int) -> dict:
                 dedup[-1] = e
             continue
         dedup.append(e)
-    # drop teammate actor lines without YOU
-    cleaned = []
-    for e in dedup:
-        tx = (e.get("text") or "").lower()
-        if e["kind"] in ("my_kill", "my_knock") and re.search(
-            r"(ashfaqul|faqul|qul\s*asif|sazal|saz\s*as|zal\s*d|bayzid|gazaldas)", tx
-        ) and not re.search(r"\byou\b", tx):
-            continue
-        cleaned.append(e)
-    dedup = cleaned
-
     result = {
         "video": str(video),
         "duration": duration,
