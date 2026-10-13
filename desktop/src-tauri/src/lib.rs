@@ -1,8 +1,9 @@
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, State};
 
 struct AppState {
@@ -108,9 +109,199 @@ fn probe_video(state: State<AppState>, path: String) -> Result<Value, String> {
     serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())
 }
 
+fn user_dir() -> PathBuf {
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata).join("HighlightApp");
+    }
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".highlight")
+}
+
+fn ui_config_path() -> PathBuf {
+    user_dir().join("ui_settings.json")
+}
+
+fn unix_mtime(p: &Path) -> u64 {
+    std::fs::metadata(p)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn path_str(p: &Path) -> String {
+    p.to_string_lossy().to_string()
+}
+
+/// One `out/{title}/` package → JSON for the library.
+fn read_output_dir(dir: &Path) -> Option<Value> {
+    let name = dir.file_name()?.to_string_lossy().to_string();
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_file())
+        .collect();
+    files.sort();
+    let file_name = |p: &PathBuf| p.file_name().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let ends = |p: &PathBuf, suffix: &str| file_name(p).to_lowercase().ends_with(suffix);
+    let pick = |exact: &str, pred: &dyn Fn(&PathBuf) -> bool| -> Option<PathBuf> {
+        files
+            .iter()
+            .find(|p| file_name(p) == exact)
+            .or_else(|| files.iter().find(|p| pred(p)))
+            .cloned()
+    };
+
+    let meta_path = pick(&format!("{name}.meta.json"), &|p| ends(p, ".meta.json"));
+    let mp4 = pick(&format!("{name}.mp4"), &|p| ends(p, ".mp4"));
+    if meta_path.is_none() && mp4.is_none() {
+        return None;
+    }
+    let thumb = pick(&format!("{name}.jpg"), &|p| {
+        ends(p, ".jpg") && !ends(p, " yt.jpg") && !file_name(p).starts_with('_')
+    });
+    let thumb_yt = pick(&format!("{name} YT.jpg"), &|p| ends(p, " yt.jpg"));
+    let txt = pick(&format!("{name}.txt"), &|p| ends(p, ".txt"));
+
+    let meta: Value = meta_path
+        .as_ref()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or(Value::Null);
+    let description = txt
+        .as_ref()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    let title = meta
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| name.clone());
+    let modified = mp4.as_ref().map(|p| unix_mtime(p)).unwrap_or_else(|| unix_mtime(dir));
+
+    Some(json!({
+        "dir": path_str(dir),
+        "name": name,
+        "title": title,
+        "mp4": mp4.as_ref().map(|p| path_str(p)),
+        "thumb": thumb.as_ref().map(|p| path_str(p)),
+        "thumb_yt": thumb_yt.as_ref().map(|p| path_str(p)),
+        "description": description,
+        "meta": meta,
+        "modified": modified,
+    }))
+}
+
+#[tauri::command]
+fn app_info(state: State<AppState>) -> Value {
+    let root = &state.repo_root;
+    json!({
+        "repo_root": path_str(root),
+        "output_dir": path_str(&root.join("out")),
+        "work_dir": path_str(&root.join("work")),
+        "brand_defaults": {
+            "character": path_str(&root.join("augniik-character.png")),
+            "cover": path_str(&root.join("augniik-cover.jpg")),
+            "profile": path_str(&root.join("augniik-profile.jpg")),
+        },
+    })
+}
+
+#[tauri::command]
+fn list_outputs(state: State<AppState>, output_dir: Option<String>) -> Result<Vec<Value>, String> {
+    let dir = output_dir
+        .filter(|s| !s.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.repo_root.join("out"));
+    if !dir.exists() {
+        return Ok(vec![]);
+    }
+    let mut items: Vec<Value> = std::fs::read_dir(&dir)
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .filter_map(|p| read_output_dir(&p))
+        .collect();
+    items.sort_by_key(|v| std::cmp::Reverse(v.get("modified").and_then(|m| m.as_u64()).unwrap_or(0)));
+    Ok(items)
+}
+
+#[tauri::command]
+fn read_output(dir: String) -> Result<Value, String> {
+    read_output_dir(Path::new(&dir)).ok_or_else(|| format!("not an output package: {dir}"))
+}
+
+#[tauri::command]
+fn get_user_config() -> Result<Value, String> {
+    let p = ui_config_path();
+    if !p.exists() {
+        return Ok(Value::Null);
+    }
+    let bytes = std::fs::read(&p).map_err(|e| e.to_string())?;
+    serde_json::from_slice(&bytes).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn save_user_config(config: Value) -> Result<(), String> {
+    let p = ui_config_path();
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let tmp = p.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &p).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn copy_brand_asset(src: String, kind: String) -> Result<String, String> {
+    if !["character", "cover", "profile"].contains(&kind.as_str()) {
+        return Err(format!("unknown brand asset: {kind}"));
+    }
+    let src = PathBuf::from(src);
+    let ext = src
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .filter(|e| ["png", "jpg", "jpeg", "webp"].contains(&e.as_str()))
+        .ok_or("brand asset must be png / jpg / webp")?;
+    let dir = user_dir().join("brand");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let prefix = format!("{kind}_");
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for e in entries.flatten() {
+            if e.file_name().to_string_lossy().starts_with(&prefix) {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+    }
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let dest = dir.join(format!("{kind}_{stamp}.{ext}"));
+    std::fs::copy(&src, &dest).map_err(|e| e.to_string())?;
+    Ok(path_str(&dest))
+}
+
 #[tauri::command]
 fn run_job(app: AppHandle, state: State<AppState>, job: Value) -> Result<(), String> {
     let root = state.repo_root.clone();
+    let mut job = job;
+    let mode = match job.get("mode").and_then(|m| m.as_str()) {
+        Some("scan") => "scan",
+        Some("assemble") => "assemble",
+        _ => "run",
+    };
+    // Keep API keys out of the job file on disk; the engine reads HIGHLIGHT_AI_KEY.
+    let ai_key = job
+        .pointer_mut("/ai/provider")
+        .and_then(|p| p.as_object_mut())
+        .and_then(|p| p.remove("api_key"))
+        .and_then(|k| k.as_str().map(|s| s.to_string()));
+
     let job_path = root.join("work").join("_ui_job.json");
     if let Some(parent) = job_path.parent() {
         std::fs::create_dir_all(parent).ok();
@@ -119,7 +310,15 @@ fn run_job(app: AppHandle, state: State<AppState>, job: Value) -> Result<(), Str
         .map_err(|e| e.to_string())?;
 
     let mut cmd = engine_command(&root);
-    cmd.arg("run").arg("--job").arg(&job_path);
+    cmd.arg(mode).arg("--job").arg(&job_path);
+    match ai_key {
+        Some(k) if !k.is_empty() => {
+            cmd.env("HIGHLIGHT_AI_KEY", k);
+        }
+        _ => {
+            cmd.env_remove("HIGHLIGHT_AI_KEY");
+        }
+    }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     cmd.env("HIGHLIGHT_RESOURCES", &root);
@@ -240,7 +439,13 @@ pub fn run() {
             probe_video,
             run_job,
             open_path,
-            cancel_job
+            cancel_job,
+            app_info,
+            list_outputs,
+            read_output,
+            get_user_config,
+            save_user_config,
+            copy_brand_asset
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

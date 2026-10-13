@@ -363,14 +363,19 @@ def _extract_scan(
     extract_region(video, out_dir, box, cfg, fps=fps, expected_duration=duration)
 
 
-def detect_video(video: Path, idx: int, cfg: AppConfig) -> dict:
+def detect_video(
+    video: Path,
+    idx: int,
+    cfg: AppConfig,
+    window: tuple[float, float] | None = None,
+) -> dict:
     work = cfg.work_dir / cfg.game_id / cfg.template_id / f"v{idx}_{_slug(video.stem)}"
     work.mkdir(parents=True, exist_ok=True)
     progress.stage("detect", message=f"[{idx}] {video.name}")
 
     duration = probe_duration(video)
     width, height = probe_size(video)
-    t0, t1 = cfg.scan_window(duration)
+    t0, t1 = window if window is not None else cfg.scan_window(duration)
     scan_span = max(1.0, t1 - t0)
     me = cfg.username
     if not me:
@@ -740,6 +745,30 @@ def detect_video(video: Path, idx: int, cfg: AppConfig) -> dict:
     return result
 
 
+def _merge_window_results(parts: list[dict], cfg: AppConfig, video: Path, idx: int) -> dict:
+    """Union events from several scan windows of one VOD into one detect result."""
+    events = dedupe_events(
+        sorted((e for p in parts for e in p["events"]), key=lambda e: e["t"]),
+        gap=2.0,
+    )
+    result = dict(parts[0])
+    result.update(
+        {
+            "scan_start": min(p["scan_start"] for p in parts),
+            "scan_end": max(p["scan_end"] for p in parts),
+            "scan_ranges": [[p["scan_start"], p["scan_end"]] for p in parts],
+            "events": events,
+            "counts": {
+                k: sum(1 for e in events if e["kind"] == k)
+                for k in ("my_knock", "my_kill", "my_assist")
+            },
+        }
+    )
+    work = cfg.work_dir / cfg.game_id / cfg.template_id / f"v{idx}_{_slug(video.stem)}"
+    (work / "events.json").write_text(json.dumps(result, indent=2), encoding="utf-8")
+    return result
+
+
 def detect_all(cfg: AppConfig) -> list[dict]:
     sources = [Path(s) for s in cfg.sources]
     if not sources:
@@ -750,7 +779,18 @@ def detect_all(cfg: AppConfig) -> list[dict]:
             progress.error(f"missing source: {video}")
             continue
         progress.stage("detect", pct=100.0 * (i - 1) / len(sources), message=video.name)
-        results.append(detect_video(video, i, cfg))
+        windows = cfg.scan_ranges(video, probe_duration(video))
+        if len(windows) == 1:
+            results.append(detect_video(video, i, cfg, window=windows[0]))
+            continue
+        parts = []
+        for w_i, win in enumerate(windows, 1):
+            progress.stage(
+                "detect",
+                message=f"[{i}] range {w_i}/{len(windows)} {win[0]:.0f}-{win[1]:.0f}s",
+            )
+            parts.append(detect_video(video, i, cfg, window=win))
+        results.append(_merge_window_results(parts, cfg, video, i))
     out = cfg.work_dir / cfg.game_id / cfg.template_id / "detection.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(results, indent=2), encoding="utf-8")

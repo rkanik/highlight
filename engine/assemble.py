@@ -13,6 +13,7 @@ from engine import progress
 from engine.config import AppConfig
 from engine.config import ffmpeg_bin
 from engine.ffmpeg_util import concat_copy, encode_segment, run
+from engine.thumb import cover_resize
 
 
 def sanitize_title(title: str) -> str:
@@ -123,14 +124,15 @@ def _pick_spread(
 
 
 def build_cold_open(results: list[dict], cfg: AppConfig) -> list[dict]:
-    """Top N kills as 1s micro-cuts. Prefer scoped (ADS) kills; fill with others if <N."""
+    """Top N scoped (ADS) kills as 1s micro-cuts. Scoped only — fewer than N is fine."""
     co = cfg.template.get("cold_open") or {}
     if not co.get("enabled", False):
         return []
     n = int(co.get("count") or 5)
     slice_dur = float(co.get("seconds_each") or 1.0)
     prefer = set(co.get("prefer_kinds") or ["my_kill", "my_knock"])
-    prefer_scoped = bool(co.get("prefer_scoped", True))
+    # Hard rule: cold open is scoped-only (never pad with hipfire / non-ADS).
+    scoped_only = bool(co.get("scoped_only", co.get("prefer_scoped", True)))
 
     scored: list[tuple[float, dict, str, float, bool]] = []
     for r in results:
@@ -138,11 +140,13 @@ def build_cold_open(results: list[dict], cfg: AppConfig) -> list[dict]:
         duration = float(r.get("duration") or 0)
         video = r.get("video") or ""
         idx = int(r.get("index") or 1)
-        tip_ocr = _load_tip_ocr_for_video(cfg, video, idx) if prefer_scoped else {}
+        tip_ocr = _load_tip_ocr_for_video(cfg, video, idx) if scoped_only else {}
         for e in evs:
             if e.get("kind") not in prefer:
                 continue
-            scoped = prefer_scoped and _event_scoped(e, tip_ocr)
+            scoped = _event_scoped(e, tip_ocr) if scoped_only else True
+            if scoped_only and not scoped:
+                continue
             s = _score_cold_event(e, evs, scoped=scoped)
             if s < 0:
                 continue
@@ -151,14 +155,8 @@ def build_cold_open(results: list[dict], cfg: AppConfig) -> list[dict]:
         return []
     scored.sort(key=lambda x: x[0], reverse=True)
 
-    scoped_pool = [x for x in scored if x[4]]
-    other_pool = [x for x in scored if not x[4]]
     used_t: list[float] = []
-    # If enough scoped frags exist, cold open is all scoped; else fill remainder.
-    picked = _pick_spread(scoped_pool, n, used_t)
-    if len(picked) < n:
-        picked.extend(_pick_spread(other_pool, n - len(picked), used_t))
-    picked = picked[:n]
+    picked = _pick_spread(scored, n, used_t)[:n]
 
     cold: list[dict] = []
     for s, e, video, duration, scoped in picked:
@@ -281,21 +279,15 @@ PUBG highlights, PUBG kills, PUBG assist, PUBG knock, kill montage, team fight, 
     path.write_text(body.strip() + "\n", encoding="utf-8")
 
 
-def assemble(results: list[dict], cfg: AppConfig) -> Path:
+def plan_clips(results: list[dict], cfg: AppConfig) -> list[dict]:
+    """Detect results → ordered clip plan (cold open + body), MH1 length pack applied."""
     progress.stage("assemble", pct=0, message="building clips")
     body_clips: list[dict] = []
-    total_events = 0
-    counts = {"my_knock": 0, "my_kill": 0, "my_assist": 0}
     for r in results:
         clips = events_to_clips(r.get("events") or [], float(r.get("duration") or 0), cfg)
         for c in clips:
             c["video"] = r["video"]
         body_clips.extend(clips)
-        total_events += len(r.get("events") or [])
-        for e in r.get("events") or []:
-            k = e.get("kind")
-            if k in counts:
-                counts[k] += 1
 
     if not body_clips:
         raise RuntimeError("No clips after detect — check username/clan and kill feed region")
@@ -320,30 +312,177 @@ def assemble(results: list[dict], cfg: AppConfig) -> Path:
             acc += c["dur"]
         body_clips = kept
 
-    all_clips = list(cold) + body_clips
+    return list(cold) + body_clips
 
-    segs_dir = cfg.work_dir / cfg.game_id / cfg.template_id / "segs"
-    if segs_dir.exists():
-        shutil.rmtree(segs_dir)
-    segs_dir.mkdir(parents=True)
 
-    seg_paths = []
+def cut_clips(results: list[dict], cfg: AppConfig) -> Path:
+    """Encode every planned clip once (final quality) + write a review manifest.
+
+    Assemble later concatenates the chosen subset without re-encoding.
+    """
+    all_clips = plan_clips(results, cfg)
+    clips_dir = cfg.clips_dir
+    if clips_dir.exists():
+        shutil.rmtree(clips_dir)
+    clips_dir.mkdir(parents=True)
+    aspect = (cfg.template.get("format") or {}).get("aspect_ratio")
+
+    entries: list[dict] = []
     for i, c in enumerate(all_clips, 1):
-        outp = segs_dir / f"seg_{i:03d}.mp4"
+        outp = clips_dir / f"clip_{i:03d}.mp4"
         role = c.get("role") or "body"
         progress.stage(
             "encode",
             pct=100.0 * (i - 1) / len(all_clips),
-            message=f"seg {i}/{len(all_clips)} ({role})",
+            message=f"clip {i}/{len(all_clips)} ({role})",
         )
         encode_segment(Path(c["video"]), c["start"], c["end"], outp, cfg)
-        if outp.exists():
-            seg_paths.append(outp)
+        if not outp.exists():
+            continue
+        entries.append({
+            "id": f"c{i:03d}",
+            "index": i,
+            "path": str(outp),
+            "start": round(float(c["start"]), 2),
+            "end": round(float(c["end"]), 2),
+            "dur": float(c["dur"]),
+            "anchor": float(c.get("anchor", c["start"])),
+            "kind": c.get("kind", ""),
+            "role": role,
+            "video": c["video"],
+            "text": (c.get("text") or "")[:240],
+            "scoped": bool(c.get("scoped")),
+            "aspect": aspect,
+        })
 
+    if not entries:
+        raise RuntimeError("Encode produced no clips")
+
+    manifest = {
+        "game": cfg.game_id,
+        "template": cfg.template_id,
+        "sources": [r.get("video") for r in results],
+        "total_events": sum(len(r.get("events") or []) for r in results),
+        "clips": entries,
+    }
+    path = clips_dir / "clips.json"
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    progress.emit(stage="clips", message=f"{len(entries)} clips ready", clips=entries, manifest=str(path))
+    return path
+
+
+def _clip_counts(clips: list[dict]) -> dict[str, int]:
+    counts = {"my_knock": 0, "my_kill": 0, "my_assist": 0}
+    for c in clips:
+        if c.get("role") == "cold_open":
+            continue
+        for k in str(c.get("kind") or "").split("+"):
+            if k in counts:
+                counts[k] += 1
+    return counts
+
+
+_WEAPONS = re.compile(
+    r"\b(kar98k?|awm|m24|mk14|mini14|slr|sks|aug|m416|akm|beryl|groza|ump|vector|mp5k?|uzi|s686|s12k|dp-?28|m249|frag|grenade|molotov|crossbow|pan)\b",
+    re.I,
+)
+
+
+def _ai_copy_ctx(cfg: AppConfig, clips: list[dict], counts: dict) -> dict:
+    weapons = sorted({m.group(1).upper() for c in clips for m in _WEAPONS.finditer(c.get("text") or "")})
+    extra = ["#Shorts"] if (cfg.template.get("format") or {}).get("aspect_ratio") == "9:16" else ["#MatchHighlight"]
+    if counts.get("my_assist"):
+        extra += ["#Assist", "#TeamPlay"]
+    return {
+        "game": cfg.game.get("name") or cfg.game_id,
+        "template": cfg.template.get("name") or cfg.template_id,
+        "format": (cfg.template.get("format") or {}).get("aspect_ratio"),
+        "title_suffix": (cfg.template.get("title_suffix") or "| PUBG").strip(),
+        "player": cfg.username,
+        "moments": counts,
+        "clip_count": len(clips),
+        "length_seconds": round(sum(float(c["dur"]) for c in clips), 1),
+        "weapons_seen": weapons,
+        "multi_kill_clips": sum(1 for c in clips if str(c.get("kind", "")).count("+") >= 1),
+        "extra_hashtags": extra,
+        "win_confirmed": False,
+    }
+
+
+def _ai_thumbs(cfg: AppConfig, provider: dict, title: str, out_dir: Path, safe: str) -> bool:
+    """AI hero base per aspect (never stretched) + one logo composite. True when primary written."""
+    from engine import ai
+    from engine.thumb import composite, hook_from_title
+
+    character = cfg.brand_path("character") or (cfg.root / "augniik-character.png")
+    cover = cfg.brand_path("cover") or (cfg.root / "augniik-cover.jpg")
+    logo = cfg.brand_path("profile") or (cfg.root / "augniik-profile.jpg")
+    refs = [p for p in (character, cover) if p.exists()]
+    hook = hook_from_title(title)
+    portrait = (cfg.template.get("format") or {}).get("aspect_ratio") == "9:16"
+    jobs = (
+        [("9:16", f"{safe}.jpg", (1080, 1920), "PUBG SHORTS"), ("16:9", f"{safe} YT.jpg", (1280, 720), "PUBG")]
+        if portrait
+        else [("16:9", f"{safe}.jpg", (1920, 1080), "PUBG"), ("16:9", f"{safe} YT.jpg", (1280, 720), "PUBG")]
+    )
+    bases: dict[str, Path] = {}
+    wrote_primary = False
+    for i, (aspect, name, size, tag) in enumerate(jobs):
+        base = bases.get(aspect)
+        if base is None:
+            progress.stage("ai", message=f"thumbnail {aspect} via {provider.get('name')}")
+            try:
+                img = ai.generate_image(
+                    provider,
+                    ai.thumb_prompt(hook, aspect, character.exists(), cover.exists()),
+                    refs,
+                    aspect,
+                )
+            except ai.AiError as e:
+                progress.stage("ai", message=f"WARNING thumbnail {aspect} failed: {e}")
+                continue
+            base = out_dir / f"_ai_base_{aspect.replace(':', 'x')}.png"
+            base.write_bytes(img)
+            bases[aspect] = base
+        composite(base, out_dir / name, hook, size, logo if logo.exists() else None, tag=tag)
+        if i == 0:
+            wrote_primary = True
+    for base in bases.values():
+        base.unlink(missing_ok=True)
+    return wrote_primary
+
+
+def package(clips: list[dict], cfg: AppConfig, *, sources: list[str], total_events: int) -> Path:
+    """Concat encoded clips (stream copy) → out/{title}/ mp4 + txt + jpg + meta.json."""
+    seg_paths = [Path(c["path"]) for c in clips if Path(c["path"]).exists()]
     if not seg_paths:
-        raise RuntimeError("Encode produced no segments")
+        raise RuntimeError("No encoded clips to assemble")
+    counts = _clip_counts(clips)
+    body_count = sum(1 for c in clips if c.get("role") != "cold_open")
+    cold_count = len(clips) - body_count
 
-    title = cfg.title or _default_title(cfg, counts)
+    ai_cfg = cfg.ai or {}
+    provider = ai_cfg.get("provider") or None
+    ai_used: dict[str, bool] = {}
+
+    title = cfg.title or ""
+    description = ""
+    if provider and (ai_cfg.get("title") or ai_cfg.get("description")):
+        from engine import ai
+
+        progress.stage("ai", message=f"title + description via {provider.get('name')}")
+        try:
+            copy = ai.generate_copy(provider, _ai_copy_ctx(cfg, clips, counts))
+            if ai_cfg.get("title") and not title and copy["title"]:
+                title = copy["title"]
+                ai_used["title"] = True
+            if ai_cfg.get("description") and copy["description"]:
+                description = copy["description"]
+                ai_used["description"] = True
+        except ai.AiError as e:
+            progress.stage("ai", message=f"WARNING copy failed: {e}")
+    title = title or _default_title(cfg, counts)
+
     safe = sanitize_title(title)
     out_dir = cfg.output_dir / safe
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -353,7 +492,71 @@ def assemble(results: list[dict], cfg: AppConfig) -> Path:
 
     jpg = out_dir / f"{safe}.jpg"
     yt = out_dir / f"{safe} YT.jpg"
-    # Grab a still for thumb if possible
+    if provider and ai_cfg.get("thumbnail"):
+        ai_used["thumbnail"] = _ai_thumbs(cfg, provider, title, out_dir, safe)
+    if not ai_used.get("thumbnail"):
+        _gameplay_thumb(clips, cfg, jpg, yt, title, counts)
+
+    txt = out_dir / f"{safe}.txt"
+    if description:
+        if not description.startswith(title):
+            description = f"{title}\n\n{description}"
+        txt.write_text(description.strip() + "\n", encoding="utf-8")
+    else:
+        write_description(txt, title, cfg, counts, body_count, total_events)
+
+    meta = {
+        "title": title,
+        "game": cfg.game_id,
+        "template": cfg.template_id,
+        "aspect": (cfg.template.get("format") or {}).get("aspect_ratio"),
+        "resolution": (cfg.template.get("format") or {}).get("resolution"),
+        "counts": counts,
+        "duration_seconds": round(sum(float(c["dur"]) for c in clips), 2),
+        "clip_count": len(clips),
+        "cold_open_clips": cold_count,
+        "cold_open_scoped": sum(1 for c in clips if c.get("role") == "cold_open" and c.get("scoped")),
+        "body_clips": body_count,
+        "total_events": total_events,
+        "sources": sources,
+        "username": cfg.username,
+        "thumbnail": jpg.name,
+        "thumbnail_youtube": yt.name,
+        **({"ai_provider": provider.get("name"), "ai_used": ai_used} if provider else {}),
+    }
+    meta_path = out_dir / f"{safe}.meta.json"
+    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
+
+    progress.artifact(str(mp4), kind="video")
+    progress.artifact(str(out_dir), kind="package")
+    progress.stage("assemble", pct=100, message="done")
+    return out_dir
+
+
+def assemble_selected(cfg: AppConfig, manifest_path: Path, selected: list[str] | None) -> Path:
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    clips = data.get("clips") or []
+    if selected is not None:
+        keep = set(selected)
+        clips = [c for c in clips if c.get("id") in keep]
+    if not clips:
+        raise RuntimeError("No clips selected")
+    progress.stage("assemble", message=f"assembling {len(clips)} selected clips")
+    return package(
+        clips,
+        cfg,
+        sources=list(data.get("sources") or []),
+        total_events=int(data.get("total_events") or 0),
+    )
+
+
+def assemble(results: list[dict], cfg: AppConfig) -> Path:
+    manifest = cut_clips(results, cfg)
+    return assemble_selected(cfg, manifest, None)
+
+
+def _gameplay_thumb(all_clips: list[dict], cfg: AppConfig, jpg: Path, yt: Path, title: str, counts: dict) -> None:
+    out_dir = jpg.parent
     try:
         best = sorted(all_clips, key=lambda c: (2 if "my_kill" in c.get("kind", "") else 1, c.get("dur", 0)), reverse=True)[0]
         tmp = out_dir / "_thumb_src.jpg"
@@ -373,36 +576,9 @@ def assemble(results: list[dict], cfg: AppConfig) -> Path:
             im = Image.open(tmp).convert("RGB")
             im = ImageEnhance.Contrast(im).enhance(1.3)
             im.save(jpg, quality=95)
-            im.resize((1280, 720)).save(yt, quality=95)
+            cover_resize(im, 1280, 720).save(yt, quality=95)
             tmp.unlink(missing_ok=True)
         else:
             _fallback_thumb(jpg, yt, title, counts)
     except Exception:
         _fallback_thumb(jpg, yt, title, counts)
-
-    txt = out_dir / f"{safe}.txt"
-    write_description(txt, title, cfg, counts, len(body_clips), total_events)
-
-    meta = {
-        "title": title,
-        "game": cfg.game_id,
-        "template": cfg.template_id,
-        "aspect": (cfg.template.get("format") or {}).get("aspect_ratio"),
-        "resolution": (cfg.template.get("format") or {}).get("resolution"),
-        "counts": counts,
-        "duration_seconds": round(sum(c["dur"] for c in all_clips), 2),
-        "clip_count": len(all_clips),
-        "cold_open_clips": len(cold),
-        "cold_open_scoped": sum(1 for c in cold if c.get("scoped")),
-        "body_clips": len(body_clips),
-        "total_events": total_events,
-        "sources": [r.get("video") for r in results],
-        "username": cfg.username,
-    }
-    meta_path = out_dir / f"{safe}.meta.json"
-    meta_path.write_text(json.dumps(meta, indent=2), encoding="utf-8")
-
-    progress.artifact(str(mp4), kind="video")
-    progress.artifact(str(out_dir), kind="package")
-    progress.stage("assemble", pct=100, message="done")
-    return out_dir

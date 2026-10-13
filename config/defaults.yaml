@@ -122,12 +122,13 @@ games:
         # Never truncate package length — keep every knock/kill/assist
         max_total_seconds: null
         title_suffix: "| PUBG"
-        # Eye-catch cold open: top kills as 1s micro-cuts before body
+        # Eye-catch cold open: top scoped kills as 1s micro-cuts before body
         cold_open:
           enabled: true
           count: 5
           seconds_each: 1.0
-          # Prefer ADS / magnified scope (Zeroing Distance tip). Fill with others if < count.
+          # Scoped (ADS / Zeroing Distance) only — up to count; fewer is fine (no hipfire fill).
+          scoped_only: true
           prefer_scoped: true
           prefer_kinds:
             - my_kill

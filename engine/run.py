@@ -8,7 +8,7 @@ import traceback
 from pathlib import Path
 
 from engine import progress
-from engine.assemble import assemble
+from engine.assemble import assemble, assemble_selected, cut_clips
 from engine.config import load_config, list_games
 from engine.detect import detect_all
 from engine.devices import probe_devices
@@ -29,6 +29,52 @@ def run_job(cfg) -> Path:
     return out_dir
 
 
+def scan_job(cfg) -> Path:
+    """Detect + encode review clips; stops before packaging."""
+    progress.stage("init", pct=0, message=json.dumps(cfg.as_job_snapshot()))
+    progress.emit(ocr_backend=get_backend_name(), ocr_ep=get_ocr_ep())
+    results = detect_all(cfg)
+    if not results or not any(r.get("events") for r in results):
+        progress.error("No events detected")
+        progress.done(ok=False, reason="no_events")
+        raise SystemExit(2)
+    manifest = cut_clips(results, cfg)
+    progress.done(ok=True, manifest=str(manifest))
+    return manifest
+
+
+def assemble_job(cfg) -> Path:
+    """Package the selected clips from a prior scan manifest."""
+    raw_manifest = cfg.raw.get("clips_manifest")
+    manifest = Path(raw_manifest) if raw_manifest else cfg.clips_dir / "clips.json"
+    if not manifest.exists():
+        raise FileNotFoundError(f"clip manifest missing: {manifest} — scan first")
+    selected = cfg.raw.get("selected_clips")
+    out_dir = assemble_selected(cfg, manifest, list(selected) if selected is not None else None)
+    progress.done(ok=True, output=str(out_dir))
+    return out_dir
+
+
+def _job_cmd(cfg, mode: str) -> int:
+    try:
+        if not cfg.device.get("encode"):
+            d = probe_devices()
+            cfg.device["encode"] = d["recommend_encode"]
+            cfg.device["decode"] = d["recommend_decode"]
+        if mode == "scan":
+            scan_job(cfg)
+        else:
+            assemble_job(cfg)
+        return 0
+    except SystemExit as e:
+        return int(e.code or 1)
+    except Exception as exc:
+        progress.error(str(exc))
+        progress.emit(traceback=traceback.format_exc())
+        progress.done(ok=False)
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="highlight-engine", description="Highlight short-video engine")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -47,6 +93,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     run_p.add_argument("sources", nargs="*", help="Source video paths")
 
+    for name, help_text in (
+        ("scan", "Detect + encode review clips (writes clips.json manifest)"),
+        ("assemble", "Package selected clips from a scan manifest"),
+    ):
+        sp = sub.add_parser(name, help=help_text)
+        sp.add_argument("--job", type=Path, required=True, help="Job JSON")
+
     sub.add_parser("devices", help="Probe GPUs / encoders (JSON)")
     sub.add_parser("games", help="List games + templates (JSON)")
     sub.add_parser("ocr-backend", help="Print active OCR backend")
@@ -61,6 +114,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "games":
         print(json.dumps(list_games(), indent=2))
         return 0
+    if args.cmd in ("scan", "assemble"):
+        try:
+            cfg = load_config(job_path=args.job)
+        except Exception as exc:
+            progress.error(str(exc))
+            progress.done(ok=False)
+            return 1
+        return _job_cmd(cfg, args.cmd)
     if args.cmd == "ocr-backend":
         print(get_backend_name())
         return 0

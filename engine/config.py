@@ -46,6 +46,10 @@ def _load_yaml(path: Path) -> dict:
     raise RuntimeError(f"PyYAML required to load {path}")
 
 
+def _source_key(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
 def _load_json(path: Path) -> dict:
     if not path.exists():
         return {}
@@ -118,10 +122,28 @@ class AppConfig:
         self.track = self.game.get("track") or {}
         self.regions = self.game.get("regions") or {}
         self.detection = self.game.get("detection") or {}
-        # Job-level source list
-        self.sources: list[str] = list(raw.get("sources") or [])
+        # Job-level source list: plain paths or {"path", "scan_ranges": [[s, e], ...]}
+        self.sources: list[str] = []
+        self._source_ranges: dict[str, list[tuple[float, float]]] = {}
+        for item in raw.get("sources") or []:
+            if isinstance(item, dict):
+                path = str(item.get("path") or "")
+                ranges = item.get("scan_ranges") or []
+            else:
+                path, ranges = str(item), []
+            if not path:
+                continue
+            self.sources.append(path)
+            parsed = [
+                (float(r[0]), float(r[1]))
+                for r in ranges
+                if isinstance(r, (list, tuple)) and len(r) == 2
+            ]
+            if parsed:
+                self._source_ranges[_source_key(path)] = parsed
         self.title: str | None = raw.get("title")
         self.ai_base: str | None = raw.get("ai_base")
+        self.ai: dict = raw.get("ai") or {}
 
     @property
     def username(self) -> str:
@@ -192,6 +214,38 @@ class AppConfig:
             t1 = min(dur, t0 + 1.0)
         return t0, t1
 
+    def scan_ranges(self, video: str | Path, duration: float) -> list[tuple[float, float]]:
+        """Per-source scan windows (clamped + merged); falls back to the global scan window."""
+        ranges = self._source_ranges.get(_source_key(str(video)))
+        if not ranges:
+            return [self.scan_window(duration)]
+        dur = max(0.0, float(duration))
+        clamped = sorted(
+            (max(0.0, min(a, dur)), max(0.0, min(b, dur))) for a, b in ranges
+        )
+        merged: list[tuple[float, float]] = []
+        for a, b in clamped:
+            if b - a < 1.0:
+                continue
+            if merged and a <= merged[-1][1] + 1.0:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+            else:
+                merged.append((a, b))
+        return merged or [self.scan_window(duration)]
+
+    def brand_path(self, kind: str) -> Path | None:
+        """Resolve brand asset (character / cover / profile); relative paths are repo-root based."""
+        raw = (self.paths.get("brand") or {}).get(kind)
+        if not raw:
+            return None
+        p = Path(str(raw))
+        p = p if p.is_absolute() else self.root / p
+        return p if p.exists() else None
+
+    @property
+    def clips_dir(self) -> Path:
+        return self.work_dir / self.game_id / self.template_id / "clips"
+
     def as_job_snapshot(self) -> dict[str, Any]:
         return {
             "game": self.game_id,
@@ -203,6 +257,8 @@ class AppConfig:
             "title": self.title,
             "scan_start_seconds": self.detection.get("scan_start_seconds"),
             "scan_end_seconds": self.detection.get("scan_end_seconds"),
+            "scan_ranges": {k: v for k, v in self._source_ranges.items()},
+            "ai_provider": (self.ai.get("provider") or {}).get("name"),
         }
 
 

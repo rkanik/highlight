@@ -14,13 +14,19 @@
       {
         "label": "main",
         "title": "Highlight",
-        "width": 980,
-        "height": 820,
+        "width": 1400,
+        "height": 900,
+        "minWidth": 1100,
+        "minHeight": 720,
         "resizable": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": ["**"]
+      }
     }
   },
   "bundle": {
