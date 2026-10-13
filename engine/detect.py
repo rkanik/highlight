@@ -22,13 +22,14 @@ from engine.classify import (
 )
 from engine.config import AppConfig
 from engine.ffmpeg_util import (
+    extract_dual_region_windows,
     extract_region,
     extract_region_windows,
     frames_covering,
     probe_duration,
     probe_size,
 )
-from engine.ocr import ocr_crop
+from engine.ocr import get_backend_name, get_ocr_ep, ocr_crop
 
 
 def _slug(stem: str) -> str:
@@ -250,7 +251,8 @@ def _ocr_list(
         fp = frame_dir / f"f_{t + 1:06d}.jpg"
         if not fp.exists():
             continue
-        ocr_map[t] = ocr_crop(fp)
+        region = "tip" if "tip" in label.lower() else "feed"
+        ocr_map[t] = ocr_crop(fp, region=region)
         progress.stage("ocr", pct=100.0 * i / max(1, len(todo)), message=f"{label} t={t}")
         time.sleep(pause)
 
@@ -284,7 +286,9 @@ def _extract_scan(
             "extract",
             message=f"{label} window extract {t0:.0f}–{t1:.0f}s @ {fps}fps",
         )
-        extract_region_windows(video, out_dir, box, cfg, [(t0, t1)], fps=fps)
+        extract_region_windows(
+            video, out_dir, box, cfg, [(t0, t1)], fps=fps, label_prefix=label
+        )
         return
     progress.stage("extract", message=f"{label} extract {duration:.0f}s @ {fps}fps")
     extract_region(video, out_dir, box, cfg, fps=fps, expected_duration=duration)
@@ -310,12 +314,19 @@ def detect_video(video: Path, idx: int, cfg: AppConfig) -> dict:
     mode = cfg.detection_mode
     max_ocr = ocr_budget(scan_span, cfg)
     pause = float(cfg.safety.get("ocr_pause_seconds") or 0.12)
+    # RapidOCR is local ONNX — no thermal need for long Windows.OCR pauses
+    if get_backend_name() == "rapidocr":
+        pause = float(cfg.safety.get("ocr_pause_rapidocr_seconds") or 0.0)
     fps = float(cfg.detection.get("sample_fps") or 1.0)
     thresh = float(cfg.detection.get("feed_diff_threshold") or 14.0)
     bucket_sec = float(cfg.detection.get("ocr_bucket_seconds") or 60.0)
     per_bucket = int(cfg.detection.get("ocr_per_bucket") or 3)
     me_stride = int(cfg.detection.get("me_hunt_stride_seconds") or 6)
 
+    progress.stage(
+        "detect",
+        message=f"ocr={get_backend_name()} ep={get_ocr_ep()}",
+    )
     if t0 > 0.5 or t1 < duration - 0.5:
         progress.stage(
             "detect",
@@ -325,57 +336,90 @@ def detect_video(video: Path, idx: int, cfg: AppConfig) -> dict:
     events: list[dict] = []
     regions = set(cfg.template_regions())
 
-    # --- tip / center banner (YOU KNOCKED / YOU KILLED) ---
+    tip_dir = work / "tip"
+    feed_dir = work / "feed"
     tip_ocr: dict[int, str] = {}
     tip_budget = tip_ocr_budget(scan_span, cfg)
     tip_enabled = bool((cfg.regions.get("tip") or {}).get("enabled", False)) or "tip" in regions
+    need_frames = max(1, int(scan_span * fps * 0.85))
+    reuse = bool(cfg.detection.get("reuse_cache", True))
+
+    legacy_banner = None
     if tip_enabled and mode in ("feed_ocr", "hybrid"):
-        tip_dir = work / "tip"
-        tip_cache = work / "tip_ocr.json"
-        tip_ocr = _load_ocr_json(tip_cache) if cfg.detection.get("reuse_cache", True) else {}
-        tip_ocr.update(_merge_legacy_ocr(work, video, "tip"))
-        need = max(1, int(scan_span * fps * 0.85))
-        legacy_banner = None
         for folder in _legacy_ks1_dirs(work, video):
             b = folder / "banner"
-            if b.is_dir() and frames_covering(b, t0, t1) >= need * 0.4:
+            if b.is_dir() and frames_covering(b, t0, t1) >= need_frames * 0.4:
                 legacy_banner = b
                 break
-        have_tip = frames_covering(tip_dir, t0, t1)
+
+    tip_ready = False
+    if tip_enabled and mode in ("feed_ocr", "hybrid"):
         if legacy_banner is not None:
             tip_dir = legacy_banner
-            progress.stage("extract", message=f"reusing legacy tip/banner frames ({tip_dir})")
-        elif cfg.detection.get("reuse_cache", True) and have_tip >= need:
+            tip_ready = True
+            progress.stage("extract", message=f"reusing legacy tip/banner ({tip_dir})")
+        elif reuse and frames_covering(tip_dir, t0, t1) >= need_frames:
+            tip_ready = True
             progress.stage(
                 "extract",
-                message=f"reusing {have_tip} tip frames ({t0:.0f}–{t1:.0f}s)",
+                message=f"reusing tip frames ({t0:.0f}–{t1:.0f}s)",
             )
-        else:
-            tip_box = cfg.absolute_box("tip", width, height)
+
+    feed_needed = "kill_feed" in regions and mode in ("feed_ocr", "hybrid", "audio_assist")
+    feed_ready = False
+    if feed_needed and mode != "audio_assist":
+        if reuse and frames_covering(feed_dir, t0, t1) >= need_frames:
+            feed_ready = True
+            progress.stage(
+                "extract",
+                message=f"reusing feed frames ({t0:.0f}–{t1:.0f}s)",
+            )
+
+    # One decode for tip+feed when both missing (was: extract 0→100% twice)
+    need_tip_x = tip_enabled and mode in ("feed_ocr", "hybrid") and not tip_ready
+    need_feed_x = feed_needed and mode != "audio_assist" and not feed_ready
+    tip_box = cfg.absolute_box("tip", width, height) if tip_enabled else None
+    feed_box = cfg.absolute_box("kill_feed", width, height) if feed_needed else None
+    windowed = t0 > 0.5 or t1 < duration - 0.5
+
+    if need_tip_x and need_feed_x and tip_box and feed_box and windowed:
+        progress.stage(
+            "extract",
+            message=f"tip+feed one-pass {t0:.0f}–{t1:.0f}s @ {fps}fps",
+        )
+        extract_dual_region_windows(
+            video, tip_dir, tip_box, feed_dir, feed_box, cfg, [(t0, t1)], fps=fps
+        )
+        tip_ready = feed_ready = True
+    else:
+        if need_tip_x and tip_box:
             _extract_scan(
-                video,
-                tip_dir,
-                tip_box,
-                cfg,
-                t0=t0,
-                t1=t1,
-                duration=duration,
-                fps=fps,
-                label="tip/banner",
+                video, tip_dir, tip_box, cfg,
+                t0=t0, t1=t1, duration=duration, fps=fps, label="tip",
             )
+            tip_ready = True
+        if need_feed_x and feed_box:
+            _extract_scan(
+                video, feed_dir, feed_box, cfg,
+                t0=t0, t1=t1, duration=duration, fps=fps, label="feed",
+            )
+            feed_ready = True
+
+    # --- tip OCR / classify ---
+    if tip_enabled and mode in ("feed_ocr", "hybrid"):
+        tip_cache = work / "tip_ocr.json"
+        tip_ocr = _load_ocr_json(tip_cache) if reuse else {}
+        tip_ocr.update(_merge_legacy_ocr(work, video, "tip"))
 
         if tip_dir.is_dir() and any(tip_dir.glob("f_*.jpg")):
             flash = tip_flash_candidates(tip_dir, t0, t1)
             flash_pick = pick_ocr_targets(flash, tip_budget, 30.0, 3)
-            # Small diff fallback fills gaps white-flash misses
             diff_scored = [
                 (s, t)
                 for s, t in feed_candidates(tip_dir, max(10.0, thresh - 2))
                 if t0 <= t <= t1
             ]
             diff_pick = pick_ocr_targets(diff_scored, max(8, tip_budget // 4), 45.0, 1)
-            # Flash first (bucketed across whole scan). Never time-truncate —
-            # sorted(set)[:N] dropped late YOU tips (e.g. 5th kill @ ~570s).
             tip_targets: list[int] = []
             seen_t: set[int] = set()
             for t in list(flash_pick) + list(diff_pick):
@@ -385,10 +429,7 @@ def detect_video(video: Path, idx: int, cfg: AppConfig) -> dict:
                 tip_targets.append(t)
                 if len(tip_targets) >= tip_budget:
                     break
-            # Drop blank cache hits so white-flash peaks get a real OCR pass
-            for t in tip_targets:
-                if t in tip_ocr and not (tip_ocr[t] or "").strip():
-                    del tip_ocr[t]
+            # Skip blank redo on cache hits — re-OCR empty tips every run wasted ~1s/frame
             progress.stage(
                 "ocr",
                 message=f"tip OCR {len(tip_targets)}/{tip_budget} "
@@ -401,7 +442,7 @@ def detect_video(video: Path, idx: int, cfg: AppConfig) -> dict:
                 pause=pause,
                 label="tip OCR",
                 max_n=tip_budget,
-                redo_blank=True,
+                redo_blank=False,
             )
             tip_cache.write_text(
                 json.dumps({str(k): v for k, v in tip_ocr.items()}, indent=2), encoding="utf-8"
@@ -423,29 +464,23 @@ def detect_video(video: Path, idx: int, cfg: AppConfig) -> dict:
         if t0 <= ee["t"] <= t1:
             events.append(ee)
 
-    # --- kill feed ---
+    # --- kill feed OCR / classify ---
     feed_ocr_map: dict[int, str] = {}
-    if "kill_feed" in regions and mode in ("feed_ocr", "hybrid", "audio_assist"):
-        box = cfg.absolute_box("kill_feed", width, height)
-        feed_dir = work / "feed"
+    if feed_needed:
+        box = feed_box or cfg.absolute_box("kill_feed", width, height)
         cache_path = work / "feed_ocr.json"
-        if cfg.detection.get("reuse_cache", True) and cache_path.exists():
+        if reuse and cache_path.exists():
             feed_ocr_map = _load_ocr_json(cache_path)
         feed_ocr_map.update(_merge_legacy_ocr(work, video, "feed"))
         feed_ocr_map = {k: v for k, v in feed_ocr_map.items() if (v or "").strip()}
 
         if mode != "audio_assist":
-            _extract_scan(
-                video,
-                feed_dir,
-                box,
-                cfg,
-                t0=t0,
-                t1=t1,
-                duration=duration,
-                fps=fps,
-                label="feed",
-            )
+            # extract already done above when needed
+            if not feed_ready and feed_box:
+                _extract_scan(
+                    video, feed_dir, feed_box, cfg,
+                    t0=t0, t1=t1, duration=duration, fps=fps, label="feed",
+                )
             n_frames = frames_covering(feed_dir, t0, t1)
             progress.stage(
                 "extract",
@@ -506,7 +541,7 @@ def detect_video(video: Path, idx: int, cfg: AppConfig) -> dict:
                 fp = feed_dir / f"f_{t + 1:06d}.jpg"
                 if not fp.exists():
                     continue
-                text = ocr_crop(fp)
+                text = ocr_crop(fp, region="feed")
                 feed_ocr_map[t] = text
                 progress.stage("ocr", pct=100.0 * i / max(1, len(to_ocr)), message=f"t={t}")
                 if classify_feed_line(text, me, team, stems, clans):
@@ -515,7 +550,7 @@ def detect_video(video: Path, idx: int, cfg: AppConfig) -> dict:
                             continue
                         nfp = feed_dir / f"f_{n + 1:06d}.jpg"
                         if nfp.exists() and n not in feed_ocr_map:
-                            feed_ocr_map[n] = ocr_crop(nfp)
+                            feed_ocr_map[n] = ocr_crop(nfp, region="feed")
                             time.sleep(pause)
                 time.sleep(pause)
 

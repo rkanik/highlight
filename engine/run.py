@@ -13,12 +13,12 @@ from engine.config import load_config, list_games
 from engine.detect import detect_all
 from engine.devices import probe_devices
 from engine.config import ffprobe_bin
-from engine.ocr import get_backend_name
+from engine.ocr import get_backend_name, get_ocr_ep
 
 
 def run_job(cfg) -> Path:
     progress.stage("init", pct=0, message=json.dumps(cfg.as_job_snapshot()))
-    progress.emit(ocr_backend=get_backend_name())
+    progress.emit(ocr_backend=get_backend_name(), ocr_ep=get_ocr_ep())
     results = detect_all(cfg)
     if not results or not any(r.get("events") for r in results):
         progress.error("No events detected")

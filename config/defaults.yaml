@@ -28,7 +28,8 @@ safety:
   one_ffmpeg_at_a_time: true
   forbid_parallel_ocr: true
   max_ocr_per_video: 40          # floor; long VODs scale via detection.ocr_per_minute
-  ocr_pause_seconds: 0.12
+  ocr_pause_seconds: 0.12        # Windows.OCR only — RapidOCR uses ocr_pause_rapidocr_seconds
+  ocr_pause_rapidocr_seconds: 0.0
 
 games:
   pubg:

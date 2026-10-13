@@ -21,9 +21,12 @@ ASSIST_RE = re.compile(
 )
 MAP_ONLY_ASSIST = re.compile(r"^\s*\d+\s*assisted\s*$", re.I)
 
-# Require YOU-like prefix — bare "KNOCKED OUT" is often a teammate tip
+# Require YOU-like prefix — bare "KNOCKED OUT" is often a teammate tip.
+# OCR often glues YOU to next word: YOUKILLED / YOUKNOCKEDOUT / YOUfinally
 YOU_LIKE = re.compile(
-    r"\byou\b|\by[o0]u\b|\byoo\b|\byouik|\byoui\s*k|\bu\s*kil",
+    r"\byou\b|\by[o0]u\b|\byoo\b|"
+    r"you(?=k|kn|kil|finall|ik|led)|"
+    r"\byouik|\byoui\s*k|\bu\s*kil",
     re.I,
 )
 YOU_KNOCK = re.compile(
@@ -31,6 +34,7 @@ YOU_KNOCK = re.compile(
     r"\byou\s*kn[o0]c|\byou\s*knocke[od]?|"
     r"\byou\s*kn[\s\[]|\byou\s*kn\b|\byoo\s*k\b|"
     r"\byou\s*kn[o0]cke?\s*t|"
+    r"youkn[o0]ck|"  # YOUKNOCKEDOUT glued
     r"\byou.{0,10}n[o0]cked?\s*o",
     re.I,
 )
@@ -38,13 +42,19 @@ YOU_KILL = re.compile(
     r"\byou\s*kill|\byou\s*elimin|\by[o0]u\s*kill|"
     r"\byou\s*kille[ed]?|\byou\s*killl?|"
     r"\byou\s*ki[l1]{1,3}|\bu\s*kil[l1]|"
-    # OCR garble: KIELED / KILED / KLLED / YOUCLLED / YOU KLI ED / YOU-KILLED
-    r"\byou[\-\s]*k[il1e]{2,8}d|\byouc?l+e[d]|\byou\s*kli\s*e[d]|"
-    r"\byouikll|\byoui\s*kll?|"
+    # OCR garble: KIELED / KILED / KLLED / YOUCLLED / YOU KLI ED / YOU-KILLED /
+    # YOUfinally KILLED / You.KLLET / YOUKE / YOULED / YOU finally … 2KILLS
+    r"\byou[\-\.\s]*k[il1e]{2,8}d?|"
+    r"\byouc?l+e[d]|\byou\s*kli\s*e[d]|"
+    r"\byouikll|\byoui\s*kll?|\byouke\b|"
+    r"youfinally|ou\s*fnally|fnally.{0,16}(kill|ked)|"
+    r"\byou\s*finally.{0,40}(kill|ked|\d+\s*kil)|"
     r"\byou\s*with\s+\w|"
     r"\bwith\s+you[\-\s]*k[il1e]{2,8}d|"
-    r"\byou.{0,28}\bkill(?:ed|vd|e[d3])?\b.{0,20}\bwith\b|"
-    r"\byou.{0,28}\bhead\s*shot\b.{0,16}\bwith\b",
+    r"\byou.{0,28}\bkill(?:ed|vd|e[d3])?\b|"
+    r"\byou.{0,28}\bhead\s*shot\b.{0,16}\bwith\b|"
+    # Banner + N KILLS overlay when YOU present but kill verb OCR-mashed
+    r"you.{0,48}\b([1-9]|1[0-9])\s*kil+s?\b",
     re.I,
 )
 # Squad tip: "2 [ASA] TeammateName KNOCKED OUT victim" — not mine

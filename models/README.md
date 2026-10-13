@@ -8,3 +8,6 @@ Place ONNX files here for fully offline OCR without first-run download:
 
 If missing, `rapidocr-onnxruntime` uses its package defaults when available.
 On Windows, engine falls back to `scripts/ocr_frame.ps1` (Windows.Media.Ocr).
+
+Speed stack: `onnxruntime-directml` (GPU via DirectML). Tip uses lighter preprocess
+(no upscale); both tip+feed keep det+rec. Full CUDA EP needs `onnxruntime-gpu` + CUDA 13/cuDNN.

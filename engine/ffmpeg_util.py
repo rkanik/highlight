@@ -335,6 +335,24 @@ def frames_covering(out_dir: Path, start: float, end: float) -> int:
     return n
 
 
+def _rename_window_frames(tmp: Path, out_dir: Path, start: float) -> int:
+    written = 0
+    for i, src in enumerate(sorted(tmp.glob("f_*.jpg"))):
+        t = int(start) + i
+        dst = out_dir / f"f_{t + 1:06d}.jpg"
+        if dst.exists():
+            dst.unlink()
+        src.rename(dst)
+        written += 1
+    for p in tmp.glob("*"):
+        p.unlink()
+    try:
+        tmp.rmdir()
+    except OSError:
+        pass
+    return written
+
+
 def extract_region_windows(
     video: Path,
     out_dir: Path,
@@ -342,8 +360,9 @@ def extract_region_windows(
     cfg: AppConfig,
     windows: list[tuple[float, float]],
     fps: float = 1.0,
+    label_prefix: str = "window",
 ) -> int:
-    """Extract kill-feed crops only inside time windows. Frame name = absolute second+1."""
+    """Extract one crop region inside time windows. Frame name = absolute second+1."""
     out_dir.mkdir(parents=True, exist_ok=True)
     x1, y1, x2, y2 = box
     w, h = x2 - x1, y2 - y1
@@ -358,7 +377,7 @@ def extract_region_windows(
             progress.stage(
                 "extract",
                 pct=min(99.0, 100.0 * (done_span + dur) / total_span),
-                message=f"reusing frames {_hms(start)}–{_hms(end)}",
+                message=f"reusing {label_prefix} {_hms(start)}–{_hms(end)}",
             )
             done_span += dur
             continue
@@ -367,7 +386,7 @@ def extract_region_windows(
         for p in tmp.glob("*.jpg"):
             p.unlink()
         vf = f"fps={fps},crop={w}:{h}:{x1}:{y1}"
-        label = f"window extract {_hms(start)}–{_hms(end)}"
+        label = f"{label_prefix} extract {_hms(start)}–{_hms(end)}"
         cmd = [
             ffmpeg_bin(), "-hide_banner", "-loglevel", "error",
             *hwaccel_args(cfg),
@@ -406,19 +425,106 @@ def extract_region_windows(
                 label=f"{label} (CPU)",
                 out_dir=tmp,
             )
-        for i, src in enumerate(sorted(tmp.glob("f_*.jpg"))):
-            t = int(start) + i
-            dst = out_dir / f"f_{t + 1:06d}.jpg"
-            if dst.exists():
-                dst.unlink()
-            src.rename(dst)
-            written += 1
-        for p in tmp.glob("*"):
-            p.unlink()
-        try:
-            tmp.rmdir()
-        except OSError:
-            pass
+        written += _rename_window_frames(tmp, out_dir, start)
+        done_span += dur
+    return written
+
+
+def extract_dual_region_windows(
+    video: Path,
+    tip_dir: Path,
+    tip_box: tuple[int, int, int, int],
+    feed_dir: Path,
+    feed_box: tuple[int, int, int, int],
+    cfg: AppConfig,
+    windows: list[tuple[float, float]],
+    fps: float = 1.0,
+) -> int:
+    """
+    One decode pass → tip + feed crops (avoids extract progress running 0→100 twice).
+    Frame names = absolute second+1 in each out dir.
+    """
+    tip_dir.mkdir(parents=True, exist_ok=True)
+    feed_dir.mkdir(parents=True, exist_ok=True)
+    tx1, ty1, tx2, ty2 = tip_box
+    fx1, fy1, fx2, fy2 = feed_box
+    tw, th = tx2 - tx1, ty2 - ty1
+    fw, fh = fx2 - fx1, fy2 - fy1
+    threads = str(cfg.device.get("ffmpeg_threads") or 1)
+    written = 0
+    total_span = sum(max(0.5, e - s) for s, e in windows) or 1.0
+    done_span = 0.0
+    for start, end in windows:
+        dur = max(0.5, end - start)
+        need = max(1, int(dur * fps * 0.85))
+        tip_ok = frames_covering(tip_dir, start, end) >= need
+        feed_ok = frames_covering(feed_dir, start, end) >= need
+        if cfg.detection.get("reuse_cache", True) and tip_ok and feed_ok:
+            progress.stage(
+                "extract",
+                pct=min(99.0, 100.0 * (done_span + dur) / total_span),
+                message=f"reusing tip+feed {_hms(start)}–{_hms(end)}",
+            )
+            done_span += dur
+            continue
+        # Only one side missing → fall back to single-region extract for that side
+        if tip_ok and not feed_ok:
+            written += extract_region_windows(
+                video, feed_dir, feed_box, cfg, [(start, end)], fps=fps, label_prefix="feed"
+            )
+            done_span += dur
+            continue
+        if feed_ok and not tip_ok:
+            written += extract_region_windows(
+                video, tip_dir, tip_box, cfg, [(start, end)], fps=fps, label_prefix="tip"
+            )
+            done_span += dur
+            continue
+
+        tip_tmp = tip_dir / f"_w_{int(start)}"
+        feed_tmp = feed_dir / f"_w_{int(start)}"
+        for d in (tip_tmp, feed_tmp):
+            d.mkdir(parents=True, exist_ok=True)
+            for p in d.glob("*.jpg"):
+                p.unlink()
+
+        fc = (
+            f"[0:v]fps={fps},split=2[t0][f0];"
+            f"[t0]crop={tw}:{th}:{tx1}:{ty1}[t];"
+            f"[f0]crop={fw}:{fh}:{fx1}:{fy1}[f]"
+        )
+        label = f"tip+feed extract {_hms(start)}–{_hms(end)}"
+        cmd = [
+            ffmpeg_bin(), "-hide_banner", "-loglevel", "error",
+            *hwaccel_args(cfg),
+            "-threads", threads,
+            "-ss", f"{start:.2f}",
+            "-t", f"{dur:.2f}",
+            "-i", str(video),
+            "-filter_complex", fc,
+            "-map", "[t]", "-q:v", "6", "-threads", threads, "-y", str(tip_tmp / "f_%06d.jpg"),
+            "-map", "[f]", "-q:v", "6", "-threads", threads, "-y", str(feed_tmp / "f_%06d.jpg"),
+        ]
+        r = run_ffmpeg_progress(cmd, duration=dur, stage="extract", label=label, out_dir=tip_tmp)
+        if r.returncode != 0 or not any(tip_tmp.glob("f_*.jpg")) or not any(feed_tmp.glob("f_*.jpg")):
+            progress.stage("extract", message=f"{label}: dual failed — sequential fallback")
+            for d in (tip_tmp, feed_tmp):
+                for p in d.glob("*"):
+                    p.unlink()
+                try:
+                    d.rmdir()
+                except OSError:
+                    pass
+            written += extract_region_windows(
+                video, tip_dir, tip_box, cfg, [(start, end)], fps=fps, label_prefix="tip"
+            )
+            written += extract_region_windows(
+                video, feed_dir, feed_box, cfg, [(start, end)], fps=fps, label_prefix="feed"
+            )
+            done_span += dur
+            continue
+        written += _rename_window_frames(tip_tmp, tip_dir, start)
+        written += _rename_window_frames(feed_tmp, feed_dir, start)
         done_span += dur
     return written
 
