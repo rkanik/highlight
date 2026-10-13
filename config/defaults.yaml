@@ -1,0 +1,150 @@
+# Bundled defaults — merged: defaults → user config → job override
+
+active_game: pubg
+active_template: kill_short
+
+paths:
+  work_dir: work
+  output_dir: out
+  brand:
+    character: augniik-character.png
+    cover: augniik-cover.jpg
+    profile: augniik-profile.jpg
+
+device:
+  decode: cuda
+  encode: h264_nvenc
+  encode_preset: p5
+  cq: 18
+  video_bitrate_mbps: 12
+  maxrate_mbps: 16
+  audio_bitrate_kbps: 192
+  ffmpeg_threads: 1
+  filter_threads: 1
+  gpu_id: null          # null = auto (external → discrete → iGPU → CPU)
+  encode_gpu_id: null
+
+safety:
+  one_ffmpeg_at_a_time: true
+  forbid_parallel_ocr: true
+  max_ocr_per_video: 40          # floor; long VODs scale via detection.ocr_per_minute
+  ocr_pause_seconds: 0.12
+
+games:
+  pubg:
+    name: "PUBG: BATTLEGROUNDS"
+    track:
+      username: rkanik
+      clan_tags:
+        - ASA
+      name_stems:
+        - rkanik
+        - rkantk
+        - rkanlk
+        - ikanik
+        - rkani
+        - rkan1
+        - tkanik
+        - lrkanik
+        - rkamik
+        - rkanlk
+        - asaanik
+        - asanik
+        - kanik
+    regions:
+      kill_feed:
+        # Relative 0–1. Start below KILLED/ASSISTED/ALIVE counters; wider for long names.
+        # @1920x1080 ≈ crop 520:250:1380:75
+        x: 0.7188
+        y: 0.0694
+        w: 0.2708
+        h: 0.2315
+      tip:
+        # Center "YOU KNOCKED / YOU KILLED" — critical for Kill Short recall
+        enabled: true
+        x: 0.2917
+        y: 0.5926
+        w: 0.4167
+        h: 0.2778
+    detection:
+      mode: feed_ocr   # feed_ocr | audio_assist | hybrid
+      sample_fps: 1.0   # full timeline — kill feed lines last ~2–3s
+      feed_diff_threshold: 14.0
+      audio_peak_dbfs: -26.0
+      reuse_cache: true
+      # Optional scan trim (seconds). null = full VOD. UI dual-slider sets these.
+      scan_start_seconds: null
+      scan_end_seconds: null
+      # OCR budget scales with length; bucketed + me-hunt so whole VOD is covered
+      ocr_per_minute: 6.0
+      max_ocr_ceiling: 900
+      ocr_bucket_seconds: 60
+      ocr_per_bucket: 3
+      me_hunt_stride_seconds: 5
+      # Tip white-flash OCR — separate from feed so YOU tips are not starved
+      tip_ocr_per_minute: 10.0
+      tip_ocr_floor: 40
+      tip_ocr_ceiling: 200
+    templates:
+      kill_short:
+        name: Kill Short
+        description: My knocks, kills, and assists from kill feed + tip
+        include:
+          - my_knock
+          - my_kill
+          - my_assist
+        exclude:
+          - spectator_or_deathcam
+        regions:
+          - kill_feed
+          - tip
+        format:
+          aspect_ratio: "9:16"
+          resolution: "1080x1920"
+          fps: 60
+          crop:
+            portrait_width: 608
+            portrait_height: 1000
+            x_offset: 656
+            y_offset: 40
+          scale_to: "1080x1920"
+        padding:
+          before_seconds: 4.0
+          after_seconds: 3.0
+        clip_merging:
+          merge_gap_seconds: 3.0
+          min_clip_seconds: 5.0
+          max_single_clip_seconds: 30.0
+        # Never truncate package length — keep every knock/kill/assist
+        max_total_seconds: null
+        title_suffix: "| PUBG"
+      match_highlight:
+        name: Match Highlight
+        description: Landscape fight reel up to 10 minutes
+        include:
+          - my_knock
+          - my_kill
+          - my_assist
+          - gunfight_engagement
+          - utility
+          - landing
+          - winner
+        exclude:
+          - spectator_or_deathcam
+        regions:
+          - kill_feed
+        format:
+          aspect_ratio: "16:9"
+          resolution: "1920x1080"
+          fps: 60
+          crop: null
+          scale_to: "1920x1080"
+        padding:
+          before_seconds: 5.0
+          after_seconds: 4.0
+        clip_merging:
+          merge_gap_seconds: 5.0
+          min_clip_seconds: 6.0
+          max_single_clip_seconds: 45.0
+        max_total_seconds: 600
+        title_suffix: "| PUBG"

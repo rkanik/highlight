@@ -1,0 +1,42 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Highlight",
+  "version": "0.1.0",
+  "identifier": "com.augniik.highlight",
+  "build": {
+    "beforeDevCommand": "npm run vite",
+    "devUrl": "http://localhost:1420",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Highlight",
+        "width": 980,
+        "height": 820,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.png"
+    ],
+    "resources": [
+      "../../config"
+    ],
+    "externalBin": [
+      "binaries/highlight-engine",
+      "binaries/ffmpeg",
+      "binaries/ffprobe"
+    ]
+  },
+  "plugins": {}
+}

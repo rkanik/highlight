@@ -32,8 +32,8 @@ PLAYER = "rkanik"
 SPEC_PAT = re.compile(r"spectat|death\s*cam", re.I)
 # I got knocked/killed — skip (do NOT match "YOU KNOCKED" / "YOU KILLED")
 VICTIM_ME = re.compile(
-    rf"(knocked|killed|eliminated)\s+you\b|"
-    rf"knocked\s+you\s+out|"
+    rf"(knocked|killed|eliminated|illed|llled|nocked|mnocked)\s+you\b|"
+    rf"(?:m?n?)?ocked\s+you\s+out|cked\s+you\s+out|"
     rf"\byou\s+(were|got|have\s+been)\s+(knocked|killed|eliminated)|"
     rf"(knocked|killed|eliminated)\s+.{{0,30}}{re.escape(PLAYER)}\b",
     re.I,
@@ -144,12 +144,13 @@ def banner_candidates(banner_dir: Path, duration: float) -> list[tuple[float, in
             continue
         mid = im.crop((int(w * 0.05), int(h * 0.18), int(w * 0.95), int(h * 0.55)))
         white = sum(mid.histogram()[205:]) / max(1, mid.size[0] * mid.size[1]) * 100
-        if not (0.55 <= white <= 4.8):
+        # Peak tip frames often sit ~4.5–6.0 mid-white (YOU KNOCKED flash)
+        if not (0.45 <= white <= 6.5):
             prev = white
             continue
         delta = white - (prev if prev is not None else 0.0)
         prev = white
-        if delta >= 0.12:
+        if delta >= 0.10:
             scored.append((delta + white * 0.35, t))
     scored.sort(reverse=True)
     return scored
@@ -209,22 +210,29 @@ def classify(text: str) -> str | None:
     if re.search(r"\byou\b.{0,40}knock", t):
         return "my_knock"
     # Heavy OCR damage on YOU KNOCKED OUT (seen in production):
-    # "U NOC ? OUT", "Y KNOC QUT", "UK CKEDOUT", "KN CKED OUT", "CKEDOUT"
+    # "U NOC ? OUT", "Y KNOC QUT", "UK CKEDOUT", "KN CKED OUT", "CKEDOUT",
+    # "CKED ming AUG" (dropped YOU/OUT, kept CKED + weapon)
     if re.search(
         r"(u\s*noc|y\s*knoc|you?\s*kn[o0c]{1,4}|uk?\s*c?ked\s*out|kn\s*c?ked\s*out|"
         r"cked\s*out|knock\s*o\s*t\s*you|knd?\s*ed\s*out|kn\s*ed\s*out)",
         t,
     ):
         return "my_knock"
+    # OCR dropped YOU/OUT: "CKED ming AUG" / "OCKED O zDaGaming With AUG"
+    if re.search(r"cked|knoc|knock", t) and WEAPON_RE.search(text) and not VICTIM_ME.search(text):
+        if teammate and not re.search(r"\byou\b|cked|knoc|knock", t):
+            return None
+        return "my_knock"
     # Garbled KILLED: "KILLE with M416", "U KIL [LOVE]", "LIED … AUG"
     if re.search(r"\bkill[e3]?[d\"]?\b|\bkille\b|\bu\s*kil\b|\bkil[l1]e\b", t) and (
         WEAPON_RE.search(text) or re.search(r"zeroing|head\s*shot|\[", t)
     ):
         return "my_kill"
+    # Tip fragment: headshot/dshot — YOU anywhere counts (OCR: "by headshot with YOU …")
+    if HEADSHOT_WITH.search(text) and re.search(r"\byou\b", t):
+        return "my_knock" if re.search(r"knock|kn\s|out", t) else "my_kill"
     # Tip fragment: headshot/dshot with weapon — require YOU or very short tip
     if HEADSHOT_WITH.search(text) and WEAPON_RE.search(text):
-        if re.search(r"\byou\b", t):
-            return "my_knock" if re.search(r"knock|kn\s|out", t) else "my_kill"
         # "dshot with Vector" ok; bare "by headshot with ACE32" from teammate feed — skip
         if len(text) <= 28 and not re.match(r"^\s*by\s+head", t):
             return "my_knock" if re.search(r"knock|kn\s|out", t) else "my_kill"

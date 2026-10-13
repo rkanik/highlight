@@ -343,33 +343,54 @@ def main() -> int:
         encode_seg(Path(c["video"]), c["start"], c["end"], outp)
         seg_paths.append(outp)
 
-    if template == "KS1A":
-        title = f"{total_events} Kills Assists Today | PUBG"
-        hook = "KILLS + ASSISTS"
-        badge = f"{total_events} PLAYS"
-    else:
-        title = f"{total_events} Kill Shots Today | PUBG"
-        hook = "KILL SHOTS"
-        badge = f"{total_events} KILLS"
+    # Prefer agent --title (AI hook). Never ship count-led titles.
+    title = None
+    if "--title" in sys.argv:
+        i = sys.argv.index("--title")
+        if i + 1 < len(sys.argv):
+            title = sys.argv[i + 1].strip()
+    if not title or re.match(r"^\s*\d+\s+", title) or re.search(r"\b\d+\s*(kills?|plays?|frags?)\b", title, re.I):
+        title = "Knock Then Finish | PUBG" if template == "KS1" else "Squad Assist Fight Chain | PUBG"
+    if "|" not in title:
+        title = f"{title} | PUBG"
+    hook = title.split("|")[0].strip()
+    badge = hook
     folder = sanitize_title(title)
     out_dir = OUT / folder
     out_dir.mkdir(parents=True, exist_ok=True)
     final_mp4 = out_dir / f"{folder}.mp4"
     concat_segs(seg_paths, final_mp4)
-    # Always use AUGNIIK branded thumbs (white-border avatar)
-    det_for_thumb = det_path
-    subtitle = "KILLS + ASSISTS" if template == "KS1A" else "KILL SHOTS"
-    thumb_script = ROOT / "scripts" / "make_augniik_thumb.py"
-    run([
-        sys.executable, "-u", str(thumb_script),
-        str(det_for_thumb), str(out_dir), str(total_events), subtitle,
-    ], check=False)
-    # fallback if brand script fails
-    if not (out_dir / f"{folder}.jpg").exists():
+
+    ai_base = None
+    if "--ai-base" in sys.argv:
+        i = sys.argv.index("--ai-base")
+        if i + 1 < len(sys.argv):
+            p = Path(sys.argv[i + 1])
+            if p.exists():
+                ai_base = p
+    if ai_base is None:
+        d = WORK / "thumb_ai"
+        if d.exists():
+            cands = sorted(d.glob("*.jpg"), key=lambda p: p.stat().st_mtime, reverse=True)
+            cands += sorted(d.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True)
+            if cands:
+                ai_base = cands[0]
+
+    main_jpg = out_dir / f"{folder}.jpg"
+    yt_jpg = out_dir / f"{folder} YT.jpg"
+    thumbs_ok = False
+    base = ai_base if ai_base is not None else (ROOT / "augniik-cover.jpg")
+    if base.exists():
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import composite_ai_thumb as cthumb  # noqa: E402
+        # KS1/KS1A: Shorts 9:16 is primary; YT stays 16:9
+        cthumb.composite(base, main_jpg, hook, (1080, 1920), tag="PUBG SHORTS")
+        cthumb.composite(base, yt_jpg, hook, (1280, 720), tag="PUBG")
+        thumbs_ok = main_jpg.exists() and yt_jpg.exists()
+    if not thumbs_ok:
         make_thumbnail(
             all_clips, title,
-            out_dir / f"{folder}.jpg",
-            out_dir / f"{folder} YT.jpg",
+            main_jpg, yt_jpg,
             total_events, hook=hook, badge_label=badge,
         )
     write_description(out_dir / f"{folder}.txt", title, total_events, len(all_clips), template, counts)

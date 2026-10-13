@@ -252,17 +252,54 @@ def name_pos(name: str, text: str) -> int | None:
     return None
 
 
+def _me_feed_pos(text: str, me: str) -> int | None:
+    """Find rkanik / OCR variants even when multi-line feed OCR glues names."""
+    pos = name_pos(me, text)
+    if pos is not None:
+        return pos
+    t = (text or "").lower()
+    for stem in ("rkanik", "rkantk", "rkanlk", "ikanik", "rkani", "rkan1"):
+        i = t.find(stem)
+        if i >= 0:
+            return i
+    return None
+
+
 def classify_feed_line(text: str, me: str, team: list[str]) -> str | None:
     """
     Kill feed is killer (left) → victim (right).
-    Leftmost roster name = squad actor.
-    me → my_knock / my_kill; other teammate → my_assist.
+    Prefer [ASA] rkanik / me anywhere left of X (multi-line OCR may list teammate first).
+    Other teammate on left → my_assist.
     """
     if not text or ks1.SPEC_PAT.search(text):
         return None
     t = text.lower()
     if ks1.VICTIM_ME.search(text):
         return None
+
+    me_pos = _me_feed_pos(text, me)
+    # All X markers — me may sit mid-crop on a later feed line
+    x_all = [m.start() for m in re.finditer(r"\bx\b", t)]
+
+    # me left of some X ⇒ my knock (own feed line), even if teammate line precedes
+    if me_pos is not None and x_all:
+        if any(me_pos < x for x in x_all):
+            # me only right of every X ⇒ victim line
+            if all(me_pos > x for x in x_all):
+                return None
+            return "my_knock"
+        if all(me_pos > x for x in x_all):
+            return None
+
+    # garbled clan: "(AS Al rkanik x" / "IASAI rkaniknr- X"
+    if re.search(
+        rf"(asa[\]i1l]?|\(\s*as\s*al).{{0,8}}{re.escape(me.lower())}.{{0,20}}\bx\b",
+        t,
+    ):
+        return "my_knock"
+    if me_pos is not None and me_pos <= max(8, int(len(t) * 0.45)):
+        if re.search(r"kill|elimin", t[me_pos : me_pos + 70]):
+            return "my_kill"
 
     hits: list[tuple[int, str, bool]] = []
     for n in team:
@@ -281,12 +318,18 @@ def classify_feed_line(text: str, me: str, team: list[str]) -> str | None:
         return None
     if _roster_victim(text, name):
         return None
+    # "X name" / "x [ASA] name" = victim side
+    if re.search(rf"\bx\b\s*\[?\s*asa\]?\s*{re.escape(name[:5])}", t, re.I):
+        return None
 
     rest = t[pos : pos + 70]
     if is_me:
         if re.search(r"\bx\b|knock", rest):
             return "my_knock"
-        return "my_kill"
+        # bare roster / name plate on left is NOT a frag — need kill cue
+        if re.search(r"kill|elimin|with\s+\w|head\s*shot|dshot", rest):
+            return "my_kill"
+        return None
 
     # teammate on left of feed = their frag / my assist window
     return "my_assist"
