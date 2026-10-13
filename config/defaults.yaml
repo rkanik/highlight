@@ -52,6 +52,8 @@ games:
         - asaanik
         - asanik
         - kanik
+        - rkank
+        - kanike
     regions:
       kill_feed:
         # Relative 0–1. Start below KILLED/ASSISTED/ALIVE counters; wider for long names.
@@ -85,7 +87,8 @@ games:
       # Tip white-flash OCR — separate from feed so YOU tips are not starved
       tip_ocr_per_minute: 10.0
       tip_ocr_floor: 40
-      tip_ocr_ceiling: 200
+      # Must cover full VOD — old 200 ceiling + early-bucket pick starved late tips
+      tip_ocr_ceiling: 900
     templates:
       kill_short:
         name: Kill Short
@@ -119,6 +122,16 @@ games:
         # Never truncate package length — keep every knock/kill/assist
         max_total_seconds: null
         title_suffix: "| PUBG"
+        # Eye-catch cold open: top kills as 1s micro-cuts before body
+        cold_open:
+          enabled: true
+          count: 5
+          seconds_each: 1.0
+          # Prefer ADS / magnified scope (Zeroing Distance tip). Fill with others if < count.
+          prefer_scoped: true
+          prefer_kinds:
+            - my_kill
+            - my_knock
       match_highlight:
         name: Match Highlight
         description: Landscape fight reel up to 10 minutes

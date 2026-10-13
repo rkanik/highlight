@@ -12,6 +12,8 @@ from PIL import Image, ImageChops, ImageStat
 
 from engine import progress
 from engine.classify import (
+    ASSIST_RE,
+    TIP_VICTIM,
     classify_feed_line,
     classify_tip_line,
     counter_events_from_ocr,
@@ -116,27 +118,90 @@ def pick_ocr_targets(
     bucket_seconds: float,
     per_bucket: int,
 ) -> list[int]:
+    """Spread OCR across the whole scan — never fill early buckets first then stop.
+
+    Old behavior walked buckets in time order and returned as soon as max_ocr filled,
+    so long VODs only OCR'd the first ~N minutes (tip ceiling 200 ⇒ ~50 min cutoff).
+    """
     if not scored or max_ocr <= 0:
         return []
     buckets: dict[int, list[tuple[float, int]]] = defaultdict(list)
     bsize = max(30.0, bucket_seconds)
     for score, t in scored:
         buckets[int(t // bsize)].append((score, t))
+    for b in buckets:
+        buckets[b].sort(reverse=True)
 
     picked: list[int] = []
     seen: set[int] = set()
-    for b in sorted(buckets):
-        for _, t in sorted(buckets[b], reverse=True)[:per_bucket]:
-            if t not in seen:
-                picked.append(t)
+    # Round-robin: one slot per bucket per pass, up to per_bucket each, until budget.
+    idxs = {b: 0 for b in buckets}
+    taken_in_bucket = {b: 0 for b in buckets}
+    while len(picked) < max_ocr:
+        progressed = False
+        for b in sorted(buckets):
+            if taken_in_bucket[b] >= max(1, per_bucket):
+                continue
+            slot = buckets[b]
+            i = idxs[b]
+            while i < len(slot):
+                _, t = slot[i]
+                i += 1
+                if t in seen:
+                    continue
                 seen.add(t)
+                picked.append(t)
+                taken_in_bucket[b] += 1
+                progressed = True
+                break
+            idxs[b] = i
             if len(picked) >= max_ocr:
-                return sorted(picked)
-    for _, t in scored:
-        if t not in seen:
-            picked.append(t)
+                break
+        if not progressed:
+            break
+    # Leftover budget: highest remaining scores anywhere (still capped).
+    if len(picked) < max_ocr:
+        for _, t in sorted(scored, reverse=True):
+            if t in seen:
+                continue
             seen.add(t)
-        if len(picked) >= max_ocr:
+            picked.append(t)
+            if len(picked) >= max_ocr:
+                break
+    return sorted(picked)
+
+
+def merge_ocr_times(*groups: list[int], max_ocr: int) -> list[int]:
+    """Merge candidate time lists with round-robin so late-VOD times are not sliced off.
+
+    `sorted(union)[:max_ocr]` kept the earliest N seconds only — on a 2.5h VOD with
+    budget 900 that cut everything after ~7130s even when change-pick had late hits.
+    """
+    if max_ocr <= 0:
+        return []
+    queues = [sorted(set(g)) for g in groups if g]
+    if not queues:
+        return []
+    picked: list[int] = []
+    seen: set[int] = set()
+    idxs = [0] * len(queues)
+    while len(picked) < max_ocr:
+        progressed = False
+        for qi, q in enumerate(queues):
+            i = idxs[qi]
+            while i < len(q):
+                t = q[i]
+                i += 1
+                if t in seen:
+                    continue
+                seen.add(t)
+                picked.append(t)
+                progressed = True
+                break
+            idxs[qi] = i
+            if len(picked) >= max_ocr:
+                break
+        if not progressed:
             break
     return sorted(picked)
 
@@ -150,12 +215,16 @@ def ocr_budget(duration: float, cfg: AppConfig) -> int:
 
 
 def tip_ocr_budget(scan_span: float, cfg: AppConfig) -> int:
-    """Separate tip budget so YOU flashes are not starved by feed OCR."""
+    """Separate tip budget so YOU flashes are not starved by feed OCR.
+
+    Ceiling must scale with VOD length — a flat 200 on a 165 min tape only covered
+    the first ~50 min when picks filled early buckets first.
+    """
     per_min = float(cfg.detection.get("tip_ocr_per_minute") or 8.0)
     floor = int(cfg.detection.get("tip_ocr_floor") or 40)
-    ceiling = int(cfg.detection.get("tip_ocr_ceiling") or 80)
+    ceiling = int(cfg.detection.get("tip_ocr_ceiling") or 900)
     scaled = int((scan_span / 60.0) * per_min)
-    return max(floor, min(ceiling, max(floor, scaled)))
+    return max(floor, min(ceiling, scaled))
 
 
 def _load_ocr_json(path: Path) -> dict[int, str]:
@@ -444,6 +513,52 @@ def detect_video(video: Path, idx: int, cfg: AppConfig) -> dict:
                 max_n=tip_budget,
                 redo_blank=False,
             )
+            # Assist / finish banners often land a few seconds after knock-you or squad kill.
+            # Per parent tip (not global RR) so late-VOD assists are not starved.
+            tip_expand: list[int] = []
+            seen_exp: set[int] = set()
+            for t, text in list(tip_ocr.items()):
+                if not (t0 <= t <= t1) or not (text or "").strip():
+                    continue
+                if not (
+                    TIP_VICTIM.search(text)
+                    or ASSIST_RE.search(text)
+                    or re.search(r"kill|kn[\d@o0]?ck|knoc|assi", text, re.I)
+                ):
+                    continue
+                kind_here = classify_tip_line(text)
+                # Prefer +4,+5 (assist chip); unclassified also try +1..+3.
+                prefer = [int(t) + 4, int(t) + 5, int(t) + 3, int(t) + 6]
+                if not kind_here:
+                    prefer = [int(t) + 5, int(t) + 4, int(t) + 1, int(t) + 2, int(t) + 3, int(t) + 6]
+                added = 0
+                for n in prefer:
+                    if added >= 2:
+                        break
+                    if not (t0 <= n <= t1) or n in seen_exp:
+                        continue
+                    if n in tip_ocr and (tip_ocr.get(n) or "").strip():
+                        continue
+                    if (tip_dir / f"f_{n + 1:06d}.jpg").exists():
+                        seen_exp.add(n)
+                        tip_expand.append(n)
+                        added += 1
+            tip_expand = sorted(tip_expand)
+            if tip_expand:
+                progress.stage(
+                    "ocr",
+                    message=f"tip neighbor OCR {len(tip_expand)} (assist/follow-up)",
+                )
+                _ocr_list(
+                    tip_expand,
+                    tip_dir,
+                    tip_ocr,
+                    pause=pause,
+                    label="tip neighbor OCR",
+                    max_n=len(tip_expand),
+                    # Empty cache slots must redo — neighbors often reserved as "" earlier.
+                    redo_blank=True,
+                )
             tip_cache.write_text(
                 json.dumps({str(k): v for k, v in tip_ocr.items()}, indent=2), encoding="utf-8"
             )
@@ -520,15 +635,19 @@ def detect_video(video: Path, idx: int, cfg: AppConfig) -> dict:
             # 2) Change buckets
             change_pick = pick_ocr_targets(scored, max_ocr, bucket_sec, per_bucket)
 
-            to_ocr = sorted(set(hunt_pick + change_pick))
+            expand: list[int] = []
             for t, text in list(feed_ocr_map.items()):
                 if not (t0 <= t <= t1):
                     continue
                 if classify_feed_line(text, me, team, stems, clans):
                     for n in range(t - 2, t + 4):
                         if t0 <= n <= t1 and (feed_dir / f"f_{n + 1:06d}.jpg").exists():
-                            to_ocr.append(n)
-            to_ocr = [t for t in sorted(set(to_ocr)) if t0 <= t <= t1][:max_ocr]
+                            expand.append(n)
+            to_ocr = [
+                t
+                for t in merge_ocr_times(change_pick, hunt_pick, expand, max_ocr=max_ocr)
+                if t0 <= t <= t1
+            ]
 
             progress.stage(
                 "ocr",

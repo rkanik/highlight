@@ -22,6 +22,168 @@ def sanitize_title(title: str) -> str:
     return t[:120]
 
 
+# PUBG ADS / magnified scope HUD — "Zeroing Distance" sits on tip while scoped.
+_SCOPE_ZEROING = re.compile(
+    r"zeroing|zeroling|zer0ing|distano\s*\d|distance\s*\d{2,3}\s*m",
+    re.I,
+)
+
+
+def _load_tip_ocr_for_video(cfg: AppConfig, video: str, index: int) -> dict[int, str]:
+    """Reuse detect tip OCR cache to flag scoped kills (no new OCR)."""
+    stem = re.sub(r"[^a-zA-Z0-9]+", "_", Path(video).stem)
+    work = cfg.work_dir / cfg.game_id / cfg.template_id / f"v{index}_{stem}"
+    path = work / "tip_ocr.json"
+    if not path.exists():
+        return {}
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    out: dict[int, str] = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            try:
+                out[int(k)] = str(v or "")
+            except ValueError:
+                continue
+    return out
+
+
+def _event_scoped(e: dict, tip_ocr: dict[int, str] | None) -> bool:
+    """True when scope/ADS was open near the frag (Zeroing Distance tip or event text)."""
+    blob = e.get("text") or ""
+    if _SCOPE_ZEROING.search(blob):
+        return True
+    if not tip_ocr:
+        return False
+    t = int(round(float(e["t"])))
+    for dt in range(-3, 4):
+        if _SCOPE_ZEROING.search(tip_ocr.get(t + dt) or ""):
+            return True
+    return False
+
+
+def _score_cold_event(e: dict, neighbors: list[dict], *, scoped: bool = False) -> float:
+    """Rank punchy kills for cold open — kill > knock; headshot/frag/sniper/cluster boost."""
+    kind = e.get("kind", "")
+    if kind == "my_kill":
+        score = 10.0
+    elif kind == "my_knock":
+        score = 6.0
+    else:
+        return -1.0
+    text = (e.get("text") or "").lower()
+    if re.search(r"head\s*shot|dshot|h\$d", text):
+        score += 3.5
+    if re.search(r"frag|grenade|molotov", text):
+        score += 2.5
+    if re.search(r"kar98|awm|m24|mk14|aug|mp5", text):
+        score += 2.0
+    t = float(e["t"])
+    near = sum(
+        1
+        for n in neighbors
+        if n.get("kind") in ("my_kill", "my_knock")
+        and abs(float(n["t"]) - t) <= 8.0
+        and n is not e
+    )
+    score += min(4.0, near * 1.5)
+    if scoped:
+        score += 100.0  # hard prefer ADS/scope frags for cold open
+    return score
+
+
+def _pick_spread(
+    pool: list[tuple[float, dict, str, float, bool]],
+    n: int,
+    used_t: list[float],
+    *,
+    min_gap: float = 12.0,
+) -> list[tuple[float, dict, str, float, bool]]:
+    """Take top-scored items spread across timeline."""
+    picked: list[tuple[float, dict, str, float, bool]] = []
+    for item in pool:
+        if len(picked) >= n:
+            break
+        t = float(item[1]["t"])
+        if any(abs(t - u) < min_gap for u in used_t):
+            continue
+        picked.append(item)
+        used_t.append(t)
+    if len(picked) < n:
+        for item in pool:
+            if len(picked) >= n:
+                break
+            if item in picked:
+                continue
+            picked.append(item)
+            used_t.append(float(item[1]["t"]))
+    return picked
+
+
+def build_cold_open(results: list[dict], cfg: AppConfig) -> list[dict]:
+    """Top N kills as 1s micro-cuts. Prefer scoped (ADS) kills; fill with others if <N."""
+    co = cfg.template.get("cold_open") or {}
+    if not co.get("enabled", False):
+        return []
+    n = int(co.get("count") or 5)
+    slice_dur = float(co.get("seconds_each") or 1.0)
+    prefer = set(co.get("prefer_kinds") or ["my_kill", "my_knock"])
+    prefer_scoped = bool(co.get("prefer_scoped", True))
+
+    scored: list[tuple[float, dict, str, float, bool]] = []
+    for r in results:
+        evs = r.get("events") or []
+        duration = float(r.get("duration") or 0)
+        video = r.get("video") or ""
+        idx = int(r.get("index") or 1)
+        tip_ocr = _load_tip_ocr_for_video(cfg, video, idx) if prefer_scoped else {}
+        for e in evs:
+            if e.get("kind") not in prefer:
+                continue
+            scoped = prefer_scoped and _event_scoped(e, tip_ocr)
+            s = _score_cold_event(e, evs, scoped=scoped)
+            if s < 0:
+                continue
+            scored.append((s, e, video, duration, scoped))
+    if not scored:
+        return []
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    scoped_pool = [x for x in scored if x[4]]
+    other_pool = [x for x in scored if not x[4]]
+    used_t: list[float] = []
+    # If enough scoped frags exist, cold open is all scoped; else fill remainder.
+    picked = _pick_spread(scoped_pool, n, used_t)
+    if len(picked) < n:
+        picked.extend(_pick_spread(other_pool, n - len(picked), used_t))
+    picked = picked[:n]
+
+    cold: list[dict] = []
+    for s, e, video, duration, scoped in picked:
+        t = float(e["t"])
+        # Punch: tip/feed flash → impact (~0.2s before banner)
+        start = max(0.0, t - 0.2)
+        end = min(duration, start + slice_dur)
+        if end - start < slice_dur * 0.85 and t + slice_dur <= duration:
+            start = max(0.0, t)
+            end = min(duration, start + slice_dur)
+        cold.append({
+            "start": start,
+            "end": end,
+            "anchor": t,
+            "kind": e["kind"],
+            "text": e.get("text", ""),
+            "dur": round(end - start, 2),
+            "video": video,
+            "role": "cold_open",
+            "score": round(s, 2),
+            "scoped": scoped,
+        })
+    return cold
+
+
 def events_to_clips(events: list[dict], duration: float, cfg: AppConfig) -> list[dict]:
     pad = cfg.template.get("padding") or {}
     merge = cfg.template.get("clip_merging") or {}
@@ -38,6 +200,7 @@ def events_to_clips(events: list[dict], duration: float, cfg: AppConfig) -> list
         raw.append({
             "start": start, "end": end, "anchor": float(e["t"]),
             "kind": e["kind"], "text": e.get("text", ""),
+            "role": "body",
         })
     if not raw:
         return []
@@ -120,34 +283,44 @@ PUBG highlights, PUBG kills, PUBG assist, PUBG knock, kill montage, team fight, 
 
 def assemble(results: list[dict], cfg: AppConfig) -> Path:
     progress.stage("assemble", pct=0, message="building clips")
-    all_clips: list[dict] = []
+    body_clips: list[dict] = []
     total_events = 0
     counts = {"my_knock": 0, "my_kill": 0, "my_assist": 0}
     for r in results:
         clips = events_to_clips(r.get("events") or [], float(r.get("duration") or 0), cfg)
         for c in clips:
             c["video"] = r["video"]
-        all_clips.extend(clips)
+        body_clips.extend(clips)
         total_events += len(r.get("events") or [])
         for e in r.get("events") or []:
             k = e.get("kind")
             if k in counts:
                 counts[k] += 1
 
-    if not all_clips:
+    if not body_clips:
         raise RuntimeError("No clips after detect — check username/clan and kill feed region")
 
+    cold = build_cold_open(results, cfg)
+    if cold:
+        progress.stage(
+            "assemble",
+            message=f"cold open {len(cold)}×{cold[0]['dur']:.1f}s",
+        )
+
     # Optional length pack (MH1). kill_short leaves max_total_seconds null — never drop frags.
+    # Cold open sits outside the pack budget so the teaser always ships.
     max_total = cfg.template.get("max_total_seconds")
     if max_total is not None and float(max_total) > 0:
         kept = []
         acc = 0.0
-        for c in all_clips:
+        for c in body_clips:
             if acc + c["dur"] > float(max_total) and kept:
                 break
             kept.append(c)
             acc += c["dur"]
-        all_clips = kept
+        body_clips = kept
+
+    all_clips = list(cold) + body_clips
 
     segs_dir = cfg.work_dir / cfg.game_id / cfg.template_id / "segs"
     if segs_dir.exists():
@@ -157,7 +330,12 @@ def assemble(results: list[dict], cfg: AppConfig) -> Path:
     seg_paths = []
     for i, c in enumerate(all_clips, 1):
         outp = segs_dir / f"seg_{i:03d}.mp4"
-        progress.stage("encode", pct=100.0 * (i - 1) / len(all_clips), message=f"seg {i}/{len(all_clips)}")
+        role = c.get("role") or "body"
+        progress.stage(
+            "encode",
+            pct=100.0 * (i - 1) / len(all_clips),
+            message=f"seg {i}/{len(all_clips)} ({role})",
+        )
         encode_segment(Path(c["video"]), c["start"], c["end"], outp, cfg)
         if outp.exists():
             seg_paths.append(outp)
@@ -203,7 +381,7 @@ def assemble(results: list[dict], cfg: AppConfig) -> Path:
         _fallback_thumb(jpg, yt, title, counts)
 
     txt = out_dir / f"{safe}.txt"
-    write_description(txt, title, cfg, counts, len(all_clips), total_events)
+    write_description(txt, title, cfg, counts, len(body_clips), total_events)
 
     meta = {
         "title": title,
@@ -214,6 +392,9 @@ def assemble(results: list[dict], cfg: AppConfig) -> Path:
         "counts": counts,
         "duration_seconds": round(sum(c["dur"] for c in all_clips), 2),
         "clip_count": len(all_clips),
+        "cold_open_clips": len(cold),
+        "cold_open_scoped": sum(1 for c in cold if c.get("scoped")),
+        "body_clips": len(body_clips),
         "total_events": total_events,
         "sources": [r.get("video") for r in results],
         "username": cfg.username,

@@ -16,7 +16,10 @@ UI_CHROME = re.compile(
     re.I,
 )
 ASSIST_RE = re.compile(
-    r"\bi\s*assist|\byou\s*assist|\+\s*\d+\s*assist|assist\s*\+|assisted\s+by",
+    r"\bi\s*assist|\byou\s*assist|\+\s*\d+\s*assist|assist\s*\+|assisted\s+by|"
+    # Tip / HUD OCR: TASSIST / 1ASSIST / 2-ASSIET / ASSIET / 2ASS15T5 / 2 ASS1ST5
+    r"\bt\s*assist|\d\s*[-.]?\s*ass[i1l][se5]t|\bass[i1l][se5]t\b|\bassist\b|"
+    r"\d\s*[-.]?\s*ass\d*s?t",
     re.I,
 )
 MAP_ONLY_ASSIST = re.compile(r"^\s*\d+\s*assisted\s*$", re.I)
@@ -44,9 +47,11 @@ YOU_KILL = re.compile(
     r"\byou\s*ki[l1]{1,3}|\bu\s*kil[l1]|"
     # OCR garble: KIELED / KILED / KLLED / YOUCLLED / YOU KLI ED / YOU-KILLED /
     # YOUfinally KILLED / You.KLLET / YOUKE / YOULED / YOU finally … 2KILLS
+    # YOUKNOGLED / YOUKNOOKEL / YOU-.OCKED (knock mashed toward kill banner)
     r"\byou[\-\.\s]*k[il1e]{2,8}d?|"
     r"\byouc?l+e[d]|\byou\s*kli\s*e[d]|"
     r"\byouikll|\byoui\s*kll?|\byouke\b|"
+    r"youkn[o0]g?l[e]d|youkn[o0]{1,3}[gk]el|"
     r"youfinally|ou\s*fnally|fnally.{0,16}(kill|ked)|"
     r"\byou\s*finally.{0,40}(kill|ked|\d+\s*kil)|"
     r"\byou\s*with\s+\w|"
@@ -55,6 +60,13 @@ YOU_KILL = re.compile(
     r"\byou.{0,28}\bhead\s*shot\b.{0,16}\bwith\b|"
     # Banner + N KILLS overlay when YOU present but kill verb OCR-mashed
     r"you.{0,48}\b([1-9]|1[0-9])\s*kil+s?\b",
+    re.I,
+)
+YOU_KNOCK_GARBLE = re.compile(
+    r"you[\-\.\s]*[\.\,]?\s*[o0]?cked|you[\-\.\s]+ocked|"
+    r"youkn[@o0]ced|youkn[@o0]cke?d?\s*o|"
+    r"youkc[y]?ked|youkcyked|youk[@c]yked|"
+    r"you[\-\.\s]*n[o0]ck",
     re.I,
 )
 # Squad tip: "2 [ASA] TeammateName KNOCKED OUT victim" — not mine
@@ -201,23 +213,28 @@ def classify_assist(text: str) -> str | None:
 
 
 def classify_tip_line(text: str) -> str | None:
-    """Center tip: YOU KNOCKED OUT / YOU KILLED (OCR-tolerant)."""
-    if not text or SPEC_PAT.search(text) or VICTIM_ME.search(text) or TIP_VICTIM.search(text):
+    """Center tip: YOU KNOCKED OUT / YOU KILLED / I ASSIST (OCR-tolerant)."""
+    if not text or SPEC_PAT.search(text):
+        return None
+    # Assist tips often OCR-mash with other banners (incl. KNOCKED YOU). Check first.
+    if classify_assist(text) == "my_assist":
+        return "my_assist"
+    if VICTIM_ME.search(text) or TIP_VICTIM.search(text):
         return None
     # Teammate/squad kill tip without YOU — never claim as mine
     if not YOU_LIKE.search(text) and TEAMMATE_TIP.search(text):
         return None
     if YOU_KILL.search(text):
         return "my_kill"
-    if YOU_KNOCK.search(text):
+    if YOU_KNOCK.search(text) or YOU_KNOCK_GARBLE.search(text):
         return "my_knock"
     # Garbled tip: weapon + knock/kill only when YOU-like prefix present
     if YOU_LIKE.search(text) and re.search(
-        r"\bwith\s+(aug|akm|m416|m24|vector|mp5|frag|kar98|beryl|m762|mp5k)\b",
+        r"\bwith\s+(aug|akm|m416|m24|vector|mp5|frag|kar98|beryl|m762|mp5k|s12k|dbs12)\b",
         text,
         re.I,
     ):
-        if re.search(r"knock|kn0ck|nock", text, re.I):
+        if re.search(r"knock|kn0ck|nock|ocked", text, re.I):
             return "my_knock"
         if re.search(r"kill|elimin|head\s*shot", text, re.I):
             return "my_kill"
@@ -294,12 +311,15 @@ def classify_feed_line(
         me_pos = _glued_me_pos(text, me, stems, clan_tags)
 
     # Finish icon is cyan X; OCR often glues to victim ("Xviewhero"). Knock = crawl icon.
+    # Multi-line feed dumps paste several rows — only trust X near my name (same row).
     x_all = [m.start() for m in re.finditer(r"(?<![a-z0-9])x|[×]", t)]
-
     if me_pos is not None and x_all:
-        nearest_left = max((x for x in x_all if x < me_pos), default=None)
-        nearest_right = min((x for x in x_all if x > me_pos + 1), default=None)
-        # Multi-line OCR dumps: pick nearest X. Closer X on the left ⇒ I am the victim.
+        local_lo = max(0, me_pos - 12)
+        local_hi = min(len(t), me_pos + 72)
+        local_x = [x for x in x_all if local_lo <= x <= local_hi]
+        nearest_left = max((x for x in local_x if x < me_pos), default=None)
+        nearest_right = min((x for x in local_x if x > me_pos + 1), default=None)
+        # Closer X on the left in-row ⇒ I am the victim.
         if nearest_left is not None and (
             nearest_right is None or (me_pos - nearest_left) <= (nearest_right - me_pos)
         ):
