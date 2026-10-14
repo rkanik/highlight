@@ -1,8 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Highlight",
+  "productName": "Hilvox",
+  "mainBinaryName": "Hilvox",
   "version": "0.1.0",
-  "identifier": "com.augniik.highlight",
+  "identifier": "com.rkanik.hilvox",
   "build": {
     "beforeDevCommand": "npm run vite",
     "devUrl": "http://localhost:1420",
@@ -13,7 +14,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "Highlight",
+        "title": "Hilvox",
         "width": 1400,
         "height": 900,
         "minWidth": 1100,
@@ -31,18 +32,37 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["nsis"],
+    "publisher": "rkanik",
+    "shortDescription": "Hilvox - PUBG VOD to highlight shorts",
     "icon": [
-      "icons/icon.png"
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.png",
+      "icons/icon.ico"
     ],
-    "resources": [
-      "../../config"
-    ],
+    "resources": {
+      "../../config": "config",
+      "../../models": "models",
+      "../../scripts/ocr_frame.ps1": "scripts/ocr_frame.ps1",
+      "../../augniik-character.png": "augniik-character.png",
+      "../../augniik-cover.jpg": "augniik-cover.jpg",
+      "../../augniik-profile.jpg": "augniik-profile.jpg"
+    },
     "externalBin": [
       "binaries/highlight-engine",
       "binaries/ffmpeg",
       "binaries/ffprobe"
-    ]
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "both",
+        "installerIcon": "icons/icon.ico",
+        "startMenuFolder": "Hilvox",
+        "displayLanguageSelector": false
+      }
+    }
   },
   "plugins": {}
 }

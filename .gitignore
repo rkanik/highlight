@@ -29,6 +29,7 @@ dist/
 desktop/node_modules/
 desktop/dist/
 desktop/src-tauri/target/
+release/
 desktop/src-tauri/binaries/*
 !desktop/src-tauri/binaries/.gitkeep
 

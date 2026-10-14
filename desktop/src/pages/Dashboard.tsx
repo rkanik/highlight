@@ -25,7 +25,7 @@ export default function Dashboard() {
         <Stack gap="xl">
           <Stack gap="xs">
             <Title className="dash-title">
-              <span>HIGHLIGHT</span>
+              <span>HILVOX</span>
             </Title>
             <Text size="lg" c="dimmed" maw={520}>
               Drop a long match. Get punchy, branded shorts back — scanned on your GPU, reviewed by you.

@@ -51,6 +51,17 @@ body {
   color: transparent;
 }
 
+.brand-icon {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+
+.dev-badge {
+  letter-spacing: 0.12em;
+  font-family: var(--mantine-font-family-monospace);
+}
+
 .nav-link {
   border-radius: 8px;
   transition: background 160ms ease, transform 160ms ease;
@@ -282,6 +293,74 @@ body {
   letter-spacing: 0.08em;
   line-height: 0.95 !important;
 }
+/* Onboarding */
+.onboard {
+  min-height: 100vh;
+  display: grid;
+  align-items: center;
+  padding: 48px clamp(24px, 9vw, 160px);
+  background:
+    radial-gradient(900px 600px at 82% 30%, rgba(240, 171, 34, 0.16), transparent 65%),
+    radial-gradient(800px 520px at 8% 100%, rgba(75, 100, 143, 0.24), transparent 70%),
+    repeating-linear-gradient(115deg, rgba(255, 255, 255, 0.018) 0 2px, transparent 2px 22px);
+}
+.onboard-inner {
+  width: min(520px, 100%);
+}
+.onboard-mark {
+  width: 76px;
+  height: 76px;
+  animation: mark-in 700ms cubic-bezier(0.2, 1.4, 0.4, 1) both;
+}
+.onboard-wordmark {
+  font-size: clamp(3rem, 6vw, 4.8rem) !important;
+  letter-spacing: 0.1em;
+  line-height: 0.9 !important;
+}
+.onboard-wordmark span {
+  background: linear-gradient(100deg, #ffd27a 0%, var(--hl-ember) 30%, #ff7a3d 55%, #ffd27a 75%, var(--hl-ember) 100%);
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ember-sweep 5s ease-in-out infinite;
+}
+.onboard-headline {
+  font-size: 1.7rem !important;
+}
+.onboard-step {
+  animation: page-in 520ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+}
+.onboard-step:nth-child(2) {
+  animation-delay: 120ms;
+}
+.onboard-step:nth-child(3) {
+  animation-delay: 220ms;
+}
+.onboard-step:nth-child(4) {
+  animation-delay: 320ms;
+}
+.onboard-fields input {
+  background: rgba(13, 16, 22, 0.7);
+}
+.onboard-arrow {
+  transition: transform 200ms ease;
+}
+.onboard-cta:not(:disabled):hover .onboard-arrow {
+  transform: translateX(4px);
+}
+@keyframes mark-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.82) rotate(-6deg);
+  }
+}
+@keyframes ember-sweep {
+  50% {
+    background-position: 100% 0;
+  }
+}
+
 .dash-title span {
   background: linear-gradient(92deg, #ffd27a 0%, var(--hl-ember) 45%, #ff7a3d 100%);
   -webkit-background-clip: text;

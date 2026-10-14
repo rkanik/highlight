@@ -65,6 +65,8 @@ type Store = {
   navigate: (page: Page, detailDir?: string | null) => void;
   config: UserConfig;
   configLoaded: boolean;
+  onboarded: boolean;
+  completeOnboarding: (username: string, clanTags: string) => void;
   setConfig: (fn: (c: UserConfig) => UserConfig) => void;
   updateSettings: (patch: Partial<AppSettings>) => void;
   appInfo: AppInfo | null;
@@ -85,6 +87,7 @@ type Store = {
   dragHot: boolean;
   outputsVersion: number;
   effectiveOutputDir: string | null;
+  isDev: boolean;
 };
 
 const Ctx = createContext<Store | null>(null);
@@ -198,6 +201,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [route, setRoute] = useState<Route>({ page: "dashboard", detailDir: null });
   const [config, setConfigState] = useState<UserConfig>(defaultUserConfig);
   const [configLoaded, setConfigLoaded] = useState(false);
+  const [onboarded, setOnboarded] = useState(false);
   const [appInfo, setAppInfo] = useState<AppInfo | null>(null);
   const [games, setGames] = useState<GameInfo[]>([]);
   const [probe, setProbe] = useState<DeviceProbe | null>(null);
@@ -229,6 +233,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setConfigState((c) => ({ ...c, settings: { ...c.settings, ...patch } }));
   }, []);
 
+  const completeOnboarding = useCallback((username: string, clanTags: string) => {
+    setConfigState((c) => ({
+      ...c,
+      settings: { ...c.settings, username: username.trim(), clanTags: clanTags.trim() },
+    }));
+    setOnboarded(true);
+    setRoute({ page: "dashboard", detailDir: null });
+  }, []);
+
   // Boot: config, games, devices, app info
   useEffect(() => {
     (async () => {
@@ -240,6 +253,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
       const merged = mergeConfig(saved);
       setConfigState(merged);
+      setOnboarded(!!merged.settings.username.trim());
       setConfigLoaded(true);
 
       try {
@@ -538,12 +552,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const clearLog = useCallback(() => setJob((j) => ({ ...j, log: [] })), []);
 
   const effectiveOutputDir = config.settings.outputDir || appInfo?.output_dir || null;
+  const isDev = import.meta.env.DEV || !!appInfo?.is_dev;
 
   const value: Store = {
     route,
     navigate,
     config,
     configLoaded,
+    onboarded,
+    completeOnboarding,
     setConfig,
     updateSettings,
     appInfo,
@@ -564,6 +581,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     dragHot,
     outputsVersion,
     effectiveOutputDir,
+    isDev,
   };
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

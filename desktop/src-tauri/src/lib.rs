@@ -4,10 +4,18 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+
+const APP_NAME: &str = "Hilvox";
+const IS_DEV: bool = cfg!(debug_assertions);
 
 struct AppState {
-    repo_root: PathBuf,
+    /// Engine resources (config/, models/, brand defaults). Repo root in dev, bundle resources when installed.
+    resources: PathBuf,
+    /// Sidecar binaries (engine, ffmpeg, ffprobe).
+    bin_dir: PathBuf,
+    work_dir: PathBuf,
+    output_dir: PathBuf,
     child: Arc<Mutex<Option<u32>>>,
 }
 
@@ -19,8 +27,37 @@ fn repo_root() -> PathBuf {
     p
 }
 
-fn find_binary(root: &PathBuf, stem: &str) -> Option<PathBuf> {
-    let bin_dir = root.join("desktop/src-tauri/binaries");
+fn app_state(app: &AppHandle) -> AppState {
+    let repo = repo_root();
+    let child = Arc::new(Mutex::new(None));
+    if IS_DEV {
+        return AppState {
+            bin_dir: repo.join("desktop/src-tauri/binaries"),
+            work_dir: repo.join("work"),
+            output_dir: repo.join("out"),
+            resources: repo,
+            child,
+        };
+    }
+    let resources = app.path().resource_dir().unwrap_or_else(|_| repo.clone());
+    let bin_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| resources.clone());
+    let work_dir = app
+        .path()
+        .app_local_data_dir()
+        .map(|d| d.join("work"))
+        .unwrap_or_else(|_| user_dir().join("work"));
+    let output_dir = app
+        .path()
+        .video_dir()
+        .map(|d| d.join(APP_NAME))
+        .unwrap_or_else(|_| user_dir().join("out"));
+    AppState { resources, bin_dir, work_dir, output_dir, child }
+}
+
+fn find_binary(bin_dir: &Path, stem: &str) -> Option<PathBuf> {
     let candidates = [
         bin_dir.join(format!("{stem}-x86_64-pc-windows-msvc.exe")),
         bin_dir.join(format!("{stem}.exe")),
@@ -32,38 +69,44 @@ fn find_binary(root: &PathBuf, stem: &str) -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.exists())
 }
 
-fn engine_command(root: &PathBuf) -> Command {
+fn engine_command(state: &AppState) -> Command {
     // Dev (`tauri dev` / debug): always use live Python so engine/ edits apply.
     // Release builds use the frozen sidecar when present.
     // Override anytime: HIGHLIGHT_USE_PYTHON=1 or HIGHLIGHT_USE_SIDECAR=1
     let force_python = std::env::var("HIGHLIGHT_USE_PYTHON").ok().as_deref() == Some("1")
-        || (cfg!(debug_assertions)
-            && std::env::var("HIGHLIGHT_USE_SIDECAR").ok().as_deref() != Some("1"));
+        || (IS_DEV && std::env::var("HIGHLIGHT_USE_SIDECAR").ok().as_deref() != Some("1"));
 
-    if !force_python {
-        if let Some(sidecar) = find_binary(root, "highlight-engine") {
-            let mut c = Command::new(sidecar);
-            if let Some(ff) = find_binary(root, "ffmpeg") {
-                c.env("HIGHLIGHT_FFMPEG", &ff);
-            }
-            if let Some(fp) = find_binary(root, "ffprobe") {
-                c.env("HIGHLIGHT_FFPROBE", &fp);
-            }
-            c.env("HIGHLIGHT_RESOURCES", root);
-            return c;
+    let mut c = match find_binary(&state.bin_dir, "highlight-engine").filter(|_| !force_python) {
+        Some(sidecar) => Command::new(sidecar),
+        None => {
+            let repo = repo_root();
+            let mut c = Command::new("python");
+            c.arg("-m").arg("engine");
+            c.current_dir(&repo);
+            c.env("PYTHONPATH", &repo);
+            c
         }
+    };
+    if let Some(ff) = find_binary(&state.bin_dir, "ffmpeg") {
+        c.env("HIGHLIGHT_FFMPEG", &ff);
     }
-    let mut c = Command::new("python");
-    c.arg("-m").arg("engine");
-    c.current_dir(root);
-    c.env("PYTHONPATH", root);
-    c.env("HIGHLIGHT_RESOURCES", root);
+    if let Some(fp) = find_binary(&state.bin_dir, "ffprobe") {
+        c.env("HIGHLIGHT_FFPROBE", &fp);
+    }
+    c.env("HIGHLIGHT_RESOURCES", &state.resources);
+    c.env("HIGHLIGHT_USER_CONFIG", user_dir().join("config.yaml"));
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        c.creation_flags(CREATE_NO_WINDOW);
+    }
     c
 }
 
 #[tauri::command]
 fn list_games(state: State<AppState>) -> Result<Value, String> {
-    let mut cmd = engine_command(&state.repo_root);
+    let mut cmd = engine_command(&state);
     cmd.arg("games");
     let out = cmd.output().map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -74,7 +117,7 @@ fn list_games(state: State<AppState>) -> Result<Value, String> {
 
 #[tauri::command]
 fn probe_devices(state: State<AppState>) -> Result<Value, String> {
-    let mut cmd = engine_command(&state.repo_root);
+    let mut cmd = engine_command(&state);
     cmd.arg("devices");
     let out = cmd.output().map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -94,7 +137,7 @@ fn probe_devices(state: State<AppState>) -> Result<Value, String> {
 
 #[tauri::command]
 fn probe_video(state: State<AppState>, path: String) -> Result<Value, String> {
-    let mut cmd = engine_command(&state.repo_root);
+    let mut cmd = engine_command(&state);
     cmd.arg("probe").arg(&path);
     let out = cmd.output().map_err(|e| e.to_string())?;
     if !out.status.success() {
@@ -109,16 +152,35 @@ fn probe_video(state: State<AppState>, path: String) -> Result<Value, String> {
     serde_json::from_slice(&out.stdout).map_err(|e| e.to_string())
 }
 
+/// Per-user data dir. Dev and installed builds stay separate so both can run on one PC.
 fn user_dir() -> PathBuf {
+    let name = if IS_DEV { "HilvoxDev" } else { APP_NAME };
     if let Ok(appdata) = std::env::var("APPDATA") {
-        return PathBuf::from(appdata).join("HighlightApp");
+        return PathBuf::from(appdata).join(name);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".highlight")
+    PathBuf::from(home).join(format!(".{}", name.to_lowercase()))
 }
 
 fn ui_config_path() -> PathBuf {
     user_dir().join("ui_settings.json")
+}
+
+/// Pre-rename settings lived in %APPDATA%/HighlightApp and came from dev runs.
+fn migrate_legacy_dev_config() {
+    if !IS_DEV {
+        return;
+    }
+    let dest = ui_config_path();
+    let Ok(appdata) = std::env::var("APPDATA") else { return };
+    let legacy = PathBuf::from(appdata).join("HighlightApp").join("ui_settings.json");
+    if dest.exists() || !legacy.exists() {
+        return;
+    }
+    if let Some(parent) = dest.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::copy(&legacy, &dest);
 }
 
 fn unix_mtime(p: &Path) -> u64 {
@@ -196,11 +258,14 @@ fn read_output_dir(dir: &Path) -> Option<Value> {
 
 #[tauri::command]
 fn app_info(state: State<AppState>) -> Value {
-    let root = &state.repo_root;
+    let root = &state.resources;
     json!({
+        "name": APP_NAME,
+        "version": env!("CARGO_PKG_VERSION"),
+        "is_dev": IS_DEV,
         "repo_root": path_str(root),
-        "output_dir": path_str(&root.join("out")),
-        "work_dir": path_str(&root.join("work")),
+        "output_dir": path_str(&state.output_dir),
+        "work_dir": path_str(&state.work_dir),
         "brand_defaults": {
             "character": path_str(&root.join("augniik-character.png")),
             "cover": path_str(&root.join("augniik-cover.jpg")),
@@ -214,7 +279,7 @@ fn list_outputs(state: State<AppState>, output_dir: Option<String>) -> Result<Ve
     let dir = output_dir
         .filter(|s| !s.trim().is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| state.repo_root.join("out"));
+        .unwrap_or_else(|| state.output_dir.clone());
     if !dir.exists() {
         return Ok(vec![]);
     }
@@ -288,13 +353,20 @@ fn copy_brand_asset(src: String, kind: String) -> Result<String, String> {
 
 #[tauri::command]
 fn run_job(app: AppHandle, state: State<AppState>, job: Value) -> Result<(), String> {
-    let root = state.repo_root.clone();
     let mut job = job;
     let mode = match job.get("mode").and_then(|m| m.as_str()) {
         Some("scan") => "scan",
         Some("assemble") => "assemble",
         _ => "run",
     };
+    // Engine resolves relative paths against resources, which is read-only when installed.
+    if let Some(obj) = job.as_object_mut() {
+        let paths = obj.entry("paths").or_insert_with(|| json!({}));
+        if let Some(p) = paths.as_object_mut() {
+            p.entry("work_dir").or_insert_with(|| json!(path_str(&state.work_dir)));
+            p.entry("output_dir").or_insert_with(|| json!(path_str(&state.output_dir)));
+        }
+    }
     // Keep API keys out of the job file on disk; the engine reads HIGHLIGHT_AI_KEY.
     let ai_key = job
         .pointer_mut("/ai/provider")
@@ -302,14 +374,14 @@ fn run_job(app: AppHandle, state: State<AppState>, job: Value) -> Result<(), Str
         .and_then(|p| p.remove("api_key"))
         .and_then(|k| k.as_str().map(|s| s.to_string()));
 
-    let job_path = root.join("work").join("_ui_job.json");
+    let job_path = state.work_dir.join("_ui_job.json");
     if let Some(parent) = job_path.parent() {
         std::fs::create_dir_all(parent).ok();
     }
     std::fs::write(&job_path, serde_json::to_vec_pretty(&job).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = engine_command(&root);
+    let mut cmd = engine_command(&state);
     cmd.arg(mode).arg("--job").arg(&job_path);
     match ai_key {
         Some(k) if !k.is_empty() => {
@@ -321,8 +393,6 @@ fn run_job(app: AppHandle, state: State<AppState>, job: Value) -> Result<(), Str
     }
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
-    cmd.env("HIGHLIGHT_RESOURCES", &root);
-    cmd.env("PYTHONPATH", &root);
 
     let mut child = cmd.spawn().map_err(|e| format!("spawn engine: {e}"))?;
     if let Ok(mut slot) = state.child.lock() {
@@ -429,9 +499,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
-        .manage(AppState {
-            repo_root: repo_root(),
-            child: Arc::new(Mutex::new(None)),
+        .setup(|app| {
+            migrate_legacy_dev_config();
+            app.manage(app_state(app.handle()));
+            if IS_DEV {
+                if let Some(win) = app.get_webview_window("main") {
+                    let _ = win.set_title(&format!("{APP_NAME} (Dev)"));
+                }
+            }
+            Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             list_games,

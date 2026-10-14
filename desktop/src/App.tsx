@@ -11,6 +11,8 @@ import Generate from "./pages/Generate";
 import Library from "./pages/Library";
 import LibraryDetail from "./pages/LibraryDetail";
 import Settings from "./pages/Settings";
+import Onboarding from "./pages/Onboarding";
+import mark from "./assets/hilvox-mark.png";
 import ConfigSidebar from "./components/ConfigSidebar";
 import DropOverlay from "./components/DropOverlay";
 
@@ -22,8 +24,11 @@ const NAV: { page: Page; label: string; icon: typeof IconMovie }[] = [
 ];
 
 export default function App() {
-  const { route, navigate, job, sources } = useStore();
+  const { route, navigate, job, sources, isDev, configLoaded, onboarded } = useStore();
   const onGenerate = route.page === "generate";
+
+  if (!configLoaded) return null;
+  if (!onboarded) return <Onboarding />;
 
   return (
     <AppShell
@@ -33,9 +38,17 @@ export default function App() {
     >
       <AppShell.Navbar className="nav-rail" p="md">
         <Stack gap={2} mb="xl" mt={4} className="brand-block">
-          <Title order={2} className="brand-mark">
-            HIGHLIGHT
-          </Title>
+          <Group gap={8} align="center" wrap="nowrap">
+            <img src={mark} alt="" className="brand-icon" />
+            <Title order={2} className="brand-mark">
+              HILVOX
+            </Title>
+            {isDev && (
+              <Badge size="sm" radius="sm" variant="filled" color="red" className="dev-badge">
+                DEV
+              </Badge>
+            )}
+          </Group>
           <Text size="xs" c="dimmed" tt="uppercase" fw={600} lts={1.5}>
             VOD to shorts, offline
           </Text>

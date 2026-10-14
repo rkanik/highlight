@@ -1,4 +1,4 @@
-# Highlight desktop (Tauri 2 + React)
+# Hilvox desktop (Tauri 2 + React)
 
 Offline short-video generator UI over the Python `engine` package.
 
@@ -39,6 +39,8 @@ PYTHONPATH=. python -m engine run --template kill_short path\to\vod.mp4
 4. **Generate** — streams JSONL progress from `python -m engine run`
 5. **Settings** — username/clan, include toggles, GPU/encode, padding, paths
 
+First launch shows onboarding for your PUBG username. Dev builds show a `DEV` badge and keep settings in `%APPDATA%\HilvoxDev`, separate from the installed app.
+
 ## Packaging
 
-See [`scripts/package_desktop.md`](../scripts/package_desktop.md).
+From repo root: `npm run build:win` (NSIS installer). See [`scripts/package_desktop.md`](../scripts/package_desktop.md).

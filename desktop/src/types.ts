@@ -80,6 +80,9 @@ export type UserConfig = {
 };
 
 export type AppInfo = {
+  name: string;
+  version: string;
+  is_dev: boolean;
   repo_root: string;
   output_dir: string;
   work_dir: string;
@@ -169,8 +172,8 @@ export const PROVIDER_PRESETS: Record<
 export const defaultSettings = (): AppSettings => ({
   gameId: "pubg",
   templateId: "kill_short",
-  username: "rkanik",
-  clanTags: "ASA",
+  username: "",
+  clanTags: "",
   detectionMode: "feed_ocr",
   includeKnocks: true,
   includeKills: true,

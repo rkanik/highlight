@@ -1,8 +1,8 @@
 [package]
 name = "highlight_desktop"
 version = "0.1.0"
-description = "Highlight short-video generator"
-authors = ["augniik"]
+description = "Hilvox short-video generator"
+authors = ["rkanik"]
 edition = "2021"
 
 [lib]

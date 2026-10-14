@@ -295,7 +295,7 @@ export default function Settings() {
           </SimpleGrid>
         </Section>
 
-        <Section title="Paths" sub="Blank uses the repo defaults.">
+        <Section title="Paths" sub="Blank uses the app defaults.">
           <SimpleGrid cols={{ base: 1, sm: 2 }}>
             <TextInput
               label="Work dir"

@@ -1,8 +1,9 @@
 {
-  "name": "highlight",
+  "name": "hilvox",
   "private": true,
   "scripts": {
     "dev": "npm --prefix desktop run tauri -- dev",
-    "start": "npm run dev"
+    "start": "npm run dev",
+    "build:win": "node scripts/build_win.mjs"
   }
 }

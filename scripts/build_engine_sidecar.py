@@ -22,6 +22,9 @@ cmd = [
     "--name", name,
     "--paths", str(ROOT),
     "--add-data", add_data,
+    "--collect-submodules", "engine",
+    "--collect-all", "rapidocr_onnxruntime",
+    "--collect-all", "onnxruntime",
     str(ROOT / "engine" / "__main__.py"),
 ]
 print("+", " ".join(cmd))

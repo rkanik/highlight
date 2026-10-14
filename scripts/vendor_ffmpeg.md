@@ -3,18 +3,15 @@
 Place platform builds here (names must match `tauri.conf.json` `externalBin`):
 
 ```
-desktop/src-tauri/binaries/ffmpeg.exe      # Windows
-desktop/src-tauri/binaries/ffprobe.exe
-desktop/src-tauri/binaries/highlight-engine.exe
+desktop/src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
+desktop/src-tauri/binaries/ffprobe-x86_64-pc-windows-msvc.exe
+desktop/src-tauri/binaries/highlight-engine-x86_64-pc-windows-msvc.exe
 ```
 
-On Linux/macOS omit `.exe`. Prefer **LGPL** static builds for redistribution.
+Get the triple with `rustc --print host-tuple`. Prefer **LGPL** static builds for redistribution.
 
-Windows example (manual):
-
-1. Download a LGPL ffmpeg shared/static build
-2. Copy `ffmpeg.exe` and `ffprobe.exe` into `desktop/src-tauri/binaries/`
-3. Run `python scripts/build_engine_sidecar.py`
+`npm run build:win` copies ffmpeg/ffprobe from `PATH` automatically when these files are missing.
+To vendor a specific build instead, copy it in under the names above before building.
 
 OCR models (optional, RapidOCR can use defaults):
 
